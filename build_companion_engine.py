@@ -77,18 +77,19 @@ def build():
     subprocess.run(cmd_host, cwd=BASE_DIR, check=True)
 
     # 3. Bundle FFmpeg and FFprobe binaries
-    print("\n[3/5] Bundling FFmpeg binaries...")
+    print("\n[3/5] Bundling FFmpeg binaries (optimized)...")
     ffmpeg_dir = find_system_ffmpeg_dir()
+    UNNEEDED_BINARIES = {"ffplay.exe", "avdevice-63.dll", "avdevice.dll"}
     if ffmpeg_dir:
         bin_target = os.path.join(OUTPUT_DIR, "bin")
         os.makedirs(bin_target, exist_ok=True)
         # Copy ffmpeg.exe, ffprobe.exe and shared DLLs
         for fname in os.listdir(ffmpeg_dir):
-            if fname.lower().endswith((".exe", ".dll")):
+            if fname.lower().endswith((".exe", ".dll")) and fname.lower() not in UNNEEDED_BINARIES:
                 src = os.path.join(ffmpeg_dir, fname)
                 dst = os.path.join(bin_target, fname)
                 shutil.copy2(src, dst)
-        print(f"  + Bundled FFmpeg files from {ffmpeg_dir} to {bin_target}")
+        print(f"  + Bundled optimized FFmpeg files from {ffmpeg_dir} to {bin_target}")
     else:
         print("  ! Warning: System FFmpeg not found.")
 
@@ -109,6 +110,18 @@ echo   Installing ShortBot Desktop Companion Engine
 echo ============================================================
 echo Directory: %APP_DIR%
 echo.
+
+:: Check for FFmpeg
+if not exist "%APP_DIR%\\bin\\ffmpeg.exe" (
+    where ffmpeg >nul 2>&1
+    if !ERRORLEVEL! NEQ 0 (
+        where winget >nul 2>&1
+        if !ERRORLEVEL! EQU 0 (
+            echo [ShortBot] Setting up media processing engine via WinGet...
+            winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements --silent >nul 2>&1
+        )
+    )
+)
 
 :: 1. Write Firefox Native Host Manifest
 (
@@ -164,21 +177,48 @@ ping -n 3 127.0.0.1 >nul
 
 """)
 
-    # 5. Create Distribution Zip
-    print("\n[5/5] Creating final release zip: ShortBot-Engine-Windows.zip...")
-    zip_path = os.path.join(DIST_DIR, "ShortBot-Engine-Windows.zip")
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as z:
+    # Clean temporary downloads and log artifacts
+    for root, dirs, files in os.walk(OUTPUT_DIR):
+        for f in files:
+            if f.lower().endswith((".mp4", ".mkv", ".webm", ".part", ".ytdl", ".log")):
+                try:
+                    os.remove(os.path.join(root, f))
+                except Exception:
+                    pass
+
+    # 5. Create Distribution Zips (Lightweight ~29MB + Full Offline ~114MB)
+    print("\n[5/5] Creating release distribution packages...")
+    
+    # 5a. Lightweight release (~29MB - Recommended for GitHub)
+    zip_light = os.path.join(DIST_DIR, "ShortBot-Engine-Windows.zip")
+    with zipfile.ZipFile(zip_light, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for root, dirs, files in os.walk(OUTPUT_DIR):
+            parts = root.split(os.sep)
+            if "bin" in parts or "downloads" in parts:
+                continue
             for file in files:
                 abs_p = os.path.join(root, file)
                 rel_p = os.path.relpath(abs_p, DIST_DIR)
                 z.write(abs_p, rel_p)
 
-    zip_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+    # 5b. Full offline release (with bundled FFmpeg)
+    zip_full = os.path.join(DIST_DIR, "ShortBot-Engine-Windows-Full.zip")
+    with zipfile.ZipFile(zip_full, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        for root, dirs, files in os.walk(OUTPUT_DIR):
+            if "downloads" in root.split(os.sep):
+                continue
+            for file in files:
+                abs_p = os.path.join(root, file)
+                rel_p = os.path.relpath(abs_p, DIST_DIR)
+                z.write(abs_p, rel_p)
+
+    size_light_mb = os.path.getsize(zip_light) / (1024 * 1024)
+    size_full_mb = os.path.getsize(zip_full) / (1024 * 1024)
     print("\n" + "=" * 60)
-    print("[SUCCESS] Standalone Companion Package Complete!")
-    print(f"Folder: {OUTPUT_DIR}")
-    print(f"Zip:    {zip_path} ({zip_size_mb:.1f} MB)")
+    print("[SUCCESS] Standalone Companion Packages Complete!")
+    print(f"Folder:       {OUTPUT_DIR}")
+    print(f"Lightweight:  {zip_light} ({size_light_mb:.1f} MB) -> FAST DOWNLOAD")
+    print(f"Full Offline: {zip_full} ({size_full_mb:.1f} MB) -> ALL CODECS INCLUDED")
     print("=" * 60)
 
 if __name__ == "__main__":

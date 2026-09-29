@@ -114,7 +114,24 @@ def find_ffmpeg_binary(name):
     if os.path.isfile(p):
         return p
     # 3. Check system PATH
-    return shutil.which(name)
+    found = shutil.which(name)
+    if found:
+        return found
+    # 4. Check WinGet packages directory in LocalAppData
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        winget_pkgs = os.path.join(local_app_data, "Microsoft", "WinGet", "Packages")
+        if os.path.isdir(winget_pkgs):
+            for root, dirs, files in os.walk(winget_pkgs):
+                for f in files:
+                    if f.lower() == f"{name.lower()}.exe":
+                        return os.path.join(root, f)
+    # 5. Common installation locations
+    for common_dir in (r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin"):
+        p = os.path.join(common_dir, f"{name}.exe")
+        if os.path.isfile(p):
+            return p
+    return None
 
 FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
 FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
