@@ -45,14 +45,25 @@ const storage = {
     async get(keys) {
         if (ext && ext.storage?.local) {
             return new Promise((resolve) => {
+                const timer = setTimeout(() => resolve({}), 800);
                 try {
                     const req = ext.storage.local.get(keys);
                     if (req && typeof req.then === "function") {
-                        req.then((res) => resolve(res || {})).catch(() => resolve({}));
+                        req.then((res) => {
+                            clearTimeout(timer);
+                            resolve(res || {});
+                        }).catch(() => {
+                            clearTimeout(timer);
+                            resolve({});
+                        });
                     } else {
-                        ext.storage.local.get(keys, (res) => resolve(res || {}));
+                        ext.storage.local.get(keys, (res) => {
+                            clearTimeout(timer);
+                            resolve(res || {});
+                        });
                     }
                 } catch {
+                    clearTimeout(timer);
                     resolve({});
                 }
             });
@@ -117,25 +128,31 @@ const storage = {
 async function sendNativeHostMessage(message) {
     if (!ext || !ext.runtime) return null;
     try {
-        // Firefox browser.runtime.sendNativeMessage returns Promise
+        const timeoutPromise = new Promise((resolve) => setTimeout(() => resolve(null), 1500));
+        let callPromise = null;
+
         if (typeof browser !== "undefined" && browser.runtime?.sendNativeMessage) {
-            try {
-                return await browser.runtime.sendNativeMessage("com.shortbot.backend", message);
-            } catch (e) {
+            callPromise = browser.runtime.sendNativeMessage("com.shortbot.backend", message).catch((e) => {
                 console.warn("[ShortBot] Firefox native messaging error:", e);
                 return null;
-            }
-        }
-        // Chrome / Edge callback-based
-        if (typeof chrome !== "undefined" && chrome.runtime?.sendNativeMessage) {
-            return await new Promise((resolve) => {
-                chrome.runtime.sendNativeMessage("com.shortbot.backend", message, (res) => {
-                    if (chrome.runtime.lastError) {
-                        console.warn("[ShortBot] Chrome native messaging error:", chrome.runtime.lastError.message);
-                    }
-                    resolve(res || null);
-                });
             });
+        } else if (typeof chrome !== "undefined" && chrome.runtime?.sendNativeMessage) {
+            callPromise = new Promise((resolve) => {
+                try {
+                    chrome.runtime.sendNativeMessage("com.shortbot.backend", message, (res) => {
+                        if (chrome.runtime?.lastError) {
+                            console.warn("[ShortBot] Chrome native messaging error:", chrome.runtime.lastError.message);
+                        }
+                        resolve(res || null);
+                    });
+                } catch {
+                    resolve(null);
+                }
+            });
+        }
+
+        if (callPromise) {
+            return await Promise.race([callPromise, timeoutPromise]);
         }
     } catch (err) {
         console.warn("[ShortBot] sendNativeHostMessage exception:", err);
@@ -1815,8 +1832,6 @@ async function compileSelected() {
         }, 5000);
     }
 
-    }
-
     catch (error) {
 
         console.error(
@@ -2427,10 +2442,10 @@ async function initApp() {
         if (quantityInput) quantityInput.addEventListener("input", saveAppState);
         if (watermarkInput) watermarkInput.addEventListener("input", saveAppState);
 
-        await restoreAppState();
         checkAndAutoStartBackend();
         checkActiveYouTubeTab();
         setupDirectDownloadSection();
+        await restoreAppState();
     } catch (err) {
         console.error("ShortBot initApp error:", err);
     }

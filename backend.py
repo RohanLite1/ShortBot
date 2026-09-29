@@ -1,10 +1,23 @@
 import sys
 import os
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UI_DIR = os.path.join(BASE_DIR, "ui")
-DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
-LOG_FILE = os.path.join(BASE_DIR, "backend.log")
+if getattr(sys, "frozen", False):
+    EXE_DIR = os.path.dirname(sys.executable)
+    INTERNAL_DIR = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    if os.path.isdir(os.path.join(INTERNAL_DIR, "ui")):
+        UI_DIR = os.path.join(INTERNAL_DIR, "ui")
+    elif os.path.isdir(os.path.join(EXE_DIR, "ui")):
+        UI_DIR = os.path.join(EXE_DIR, "ui")
+    else:
+        UI_DIR = os.path.join(INTERNAL_DIR, "ui")
+    DOWNLOAD_DIR = os.path.join(EXE_DIR, "downloads")
+    LOG_FILE = os.path.join(EXE_DIR, "backend.log")
+    BASE_DIR = INTERNAL_DIR
+else:
+    BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+    UI_DIR = os.path.join(BASE_DIR, "ui")
+    DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+    LOG_FILE = os.path.join(BASE_DIR, "backend.log")
 
 # Ensure UTF-8 output handling on Windows or log to file if running headless/pythonw
 try:
@@ -102,15 +115,20 @@ def probe_media_info(file_path):
 
 
 # ============================================================
-# FIREFOX / EXTENSION CORS
+# FIREFOX / EXTENSION CORS & PREFLIGHT
 # ============================================================
+
+@app.before_request
+def handle_preflight():
+    if request.method == "OPTIONS":
+        return ("", 204)
 
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range, Authorization, X-Requested-With"
     response.headers["Access-Control-Expose-Headers"] = "Content-Disposition, Content-Length, Content-Range, X-Filename"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, HEAD"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, HEAD, PUT, DELETE"
     return response
 
 
