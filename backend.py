@@ -75,20 +75,30 @@ def get_task_progress_route(task_id):
     return jsonify({"success": True, "progress": prog})
 
 def get_video_duration(file_path):
+    dur, _ = probe_media_info(file_path)
+    return dur
+
+
+def probe_media_info(file_path):
+    """Probes media duration and checks if audio stream exists."""
     try:
         probe = FFPROBE_PATH or shutil.which("ffprobe") or "ffprobe"
         cmd = [
             probe,
             "-v", "error",
-            "-show_entries", "format=duration",
-            "-of", "default=noprint_wrappers=1:nokey=1",
+            "-show_entries", "format=duration:stream=codec_type",
+            "-of", "json",
             file_path
         ]
         res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
-        val = float(res.stdout.strip())
-        return max(0.1, val)
+        import json
+        info = json.loads(res.stdout) if res.stdout else {}
+        dur = float(info.get("format", {}).get("duration", 0.0))
+        streams = info.get("streams", [])
+        has_audio = any(s.get("codec_type") == "audio" for s in streams)
+        return max(0.1, dur), has_audio
     except Exception:
-        return 0.0
+        return 0.0, False
 
 
 # ============================================================
@@ -98,8 +108,9 @@ def get_video_duration(file_path):
 @app.after_request
 def add_cors_headers(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Range"
+    response.headers["Access-Control-Expose-Headers"] = "Content-Disposition, Content-Length, Content-Range, X-Filename"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, HEAD"
     return response
 
 
@@ -512,7 +523,32 @@ def download():
             "error": "FFmpeg was not found."
         }), 500
 
-    file_id = uuid.uuid4().hex[:8]
+    def get_url_file_id(v_url):
+        m = re.search(r"(?:shorts/|v=|youtu\.be/)([a-zA-Z0-9_-]{11})", v_url)
+        if m:
+            return m.group(1)
+        import hashlib
+        return hashlib.sha256(v_url.strip().encode("utf-8")).hexdigest()[:10]
+
+    file_id = get_url_file_id(video_url)
+    cached_file = os.path.join(DOWNLOAD_DIR, f"short_{file_id}.mp4")
+
+    # Instant return if already downloaded and valid (when no watermark is needed)
+    if os.path.isfile(cached_file) and os.path.getsize(cached_file) > 10000 and not watermark:
+        update_task_progress(task_id, 100.0, "Ready from cache!", detail=f"short_{file_id}.mp4", status="completed")
+        if server_only:
+            return jsonify({
+                "success": True,
+                "filename": f"short_{file_id}.mp4"
+            })
+        resp = send_file(
+            cached_file,
+            as_attachment=True,
+            download_name=f"short_{file_id}.mp4",
+            mimetype="video/mp4"
+        )
+        resp.headers["X-Filename"] = f"short_{file_id}.mp4"
+        return resp
 
     output_template = os.path.join(
         DOWNLOAD_DIR,
@@ -732,12 +768,14 @@ def download():
                 "filename": f"short_{file_id}.mp4"
             })
 
-        return send_file(
+        response = send_file(
             final_file,
             as_attachment=True,
             download_name=f"short_{file_id}.mp4",
             mimetype="video/mp4"
         )
+        response.headers["X-Filename"] = f"short_{file_id}.mp4"
+        return response
 
     except subprocess.TimeoutExpired:
 
@@ -978,26 +1016,35 @@ def compile_shorts():
         detail="Creating concatenation manifest..."
     )
 
-    print("Files to compile:")
+    # Probe each input clip
+    durations = []
+    has_audios = []
+    for f in valid_files:
+        dur, has_audio = probe_media_info(f)
+        durations.append(dur)
+        has_audios.append(has_audio)
 
+    total_duration = sum(durations)
+
+    update_task_progress(
+        task_id,
+        12.0,
+        f"Preparing {len(valid_files)} video clips...",
+        detail="Normalizing and building compilation pipeline..."
+    )
+
+    print("Files to compile:")
     for file in valid_files:
         print(file)
-
     print()
 
     if watermark:
         print("Watermark:", watermark)
     else:
         print("Watermark: NONE")
-
     print()
 
     compile_id = uuid.uuid4().hex[:8]
-
-    concat_file = os.path.join(
-        DOWNLOAD_DIR,
-        f"concat_{compile_id}.txt"
-    )
 
     watermark_file = os.path.join(
         DOWNLOAD_DIR,
@@ -1010,196 +1057,110 @@ def compile_shorts():
     )
 
     try:
-
-        # ----------------------------------------------------
-        # CREATE CONCAT FILE
-        # ----------------------------------------------------
-
-        with open(
-            concat_file,
-            "w",
-            encoding="utf-8"
-        ) as f:
-
-            for file in valid_files:
-
-                ffmpeg_path = file.replace(
-                    "\\",
-                    "/"
-                )
-
-                f.write(
-                    "file '" +
-                    ffmpeg_path +
-                    "'\n"
-                )
-
-        # ----------------------------------------------------
-        # NO WATERMARK
-        # ----------------------------------------------------
-
-        if not watermark:
-
-            command = [
-
-                FFMPEG_PATH,
-
-                "-y",
-
-                "-f",
-                "concat",
-
-                "-safe",
-                "0",
-
-                "-i",
-                concat_file,
-
-                "-c",
-                "copy",
-
-                "-movflags",
-                "+faststart",
-
-                output_file
-            ]
-
-            update_task_progress(
-                task_id,
-                40.0,
-                "Merging video clips...",
-                detail="Direct stream copy..."
+        # Build multi-input normalization & concatenation filter
+        input_args = []
+        filter_parts = []
+        for i, f in enumerate(valid_files):
+            input_args.extend(["-i", f])
+            # Normalize video to 1080x1920 (9:16 vertical), 30 fps
+            filter_parts.append(
+                f"[{i}:v]scale=1080:1920:force_original_aspect_ratio=decrease,"
+                f"pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v{i}]"
             )
+            # Normalize audio to 48000Hz stereo AAC (synthesize silence if clip has no audio)
+            if has_audios[i]:
+                filter_parts.append(f"[{i}:a]aformat=sample_rates=48000:channel_layouts=stereo[a{i}]")
+            else:
+                filter_parts.append(f"aevalsrc=0:d={durations[i]}:s=48000:c=stereo[a{i}]")
 
-            result = subprocess.run(
-                command,
-                capture_output=True,
-                text=True,
-                timeout=300
-            )
+        concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(valid_files)))
+        filter_parts.append(f"{concat_inputs}concat=n={len(valid_files)}:v=1:a=1[vconcat][aout]")
 
-            if result.returncode != 0:
-                update_task_progress(task_id, 0.0, "Compilation failed", detail=result.stderr[:200], status="error")
-                return jsonify({
-                    "success": False,
-                    "error": "FFmpeg could not compile the Shorts.",
-                    "details": result.stderr[-3000:]
-                }), 500
-
-        # ----------------------------------------------------
-        # WATERMARK ENABLED
-        # ----------------------------------------------------
-
-        else:
-
-            with open(
-                watermark_file,
-                "w",
-                encoding="utf-8"
-            ) as f:
-
+        out_v = "[vconcat]"
+        if watermark:
+            with open(watermark_file, "w", encoding="utf-8") as f:
                 f.write(watermark)
 
-            watermark_path = watermark_file.replace(
-                "\\",
-                "/"
+            wm_path = watermark_file.replace("\\", "/")
+            if len(wm_path) >= 2 and wm_path[1] == ":":
+                wm_path = wm_path[0] + "\\:" + wm_path[2:]
+
+            font_clause = "fontfile='C\\:/Windows/Fonts/arial.ttf':" if os.path.isfile(r"C:\Windows\Fonts\arial.ttf") else "font='Arial':"
+
+            drawtext = (
+                f"drawtext=textfile='{wm_path}':"
+                f"{font_clause}"
+                "fontsize=48:fontcolor=white:box=1:boxcolor=black@0.55:boxborderw=12:"
+                "x=w-tw-30:y=h-th-30"
             )
+            filter_parts.append(f"[vconcat]{drawtext}[vout]")
+            out_v = "[vout]"
 
-            if (
-                len(watermark_path) >= 2
-                and watermark_path[1] == ":"
-            ):
+        full_filter = ";".join(filter_parts)
+        encoder_args = get_fast_h264_encoder()
 
-                watermark_path = (
-                    watermark_path[0]
-                    + "\\:"
-                    + watermark_path[2:]
-                )
+        command = [
+            FFMPEG_PATH,
+            "-y",
+            *input_args,
+            "-filter_complex", full_filter,
+            "-map", out_v,
+            "-map", "[aout]",
+            *encoder_args,
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
+            "-progress", "pipe:1",
+            "-nostats",
+            output_file
+        ]
 
-            filter_complex = (
-                "drawtext="
-                "textfile='"
-                + watermark_path
-                + "':"
-                "fontfile='C\\:/Windows/Fonts/arial.ttf':"
-                "fontsize=48:"
-                "fontcolor=white:"
-                "box=1:"
-                "boxcolor=black@0.55:"
-                "boxborderw=12:"
-                "x=w-tw-30:"
-                "y=h-th-30"
-            )
+        wm_label = f" with watermark '{watermark}'" if watermark else ""
+        update_task_progress(
+            task_id,
+            18.0,
+            f"Compiling {len(valid_files)} Shorts{wm_label}...",
+            detail="Encoding normalized compilation..."
+        )
 
-            encoder_args = get_fast_h264_encoder()
-            command = [
-                FFMPEG_PATH,
-                "-y",
-                "-f",
-                "concat",
-                "-safe",
-                "0",
-                "-i",
-                concat_file,
-                "-vf",
-                filter_complex,
-                *encoder_args,
-                "-pix_fmt",
-                "yuv420p",
-                "-c:a",
-                "copy",
-                "-movflags",
-                "+faststart",
-                "-progress",
-                "pipe:1",
-                "-nostats",
-                output_file
-            ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
 
-            update_task_progress(
-                task_id,
-                20.0,
-                f"Applying watermark '{watermark}'...",
-                detail="Encoding compilation with FFmpeg..."
-            )
+        recent_lines = []
+        for line in iter(process.stdout.readline, ''):
+            recent_lines.append(line)
+            if len(recent_lines) > 50:
+                recent_lines.pop(0)
+            if "out_time_us=" in line:
+                match = re.search(r"out_time_us=(\d+)", line)
+                if match and total_duration > 0:
+                    current_sec = int(match.group(1)) / 1_000_000.0
+                    fraction = min(1.0, current_sec / total_duration)
+                    prog = 18.0 + fraction * 78.0
+                    update_task_progress(
+                        task_id,
+                        round(prog, 1),
+                        f"Compiling Shorts{wm_label} ({prog:.0f}%)...",
+                        detail=f"{current_sec:.1f}s / {total_duration:.1f}s processed"
+                    )
 
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                universal_newlines=True
-            )
+        process.wait(timeout=1200)
 
-            recent_lines = []
-            for line in iter(process.stdout.readline, ''):
-                recent_lines.append(line)
-                if len(recent_lines) > 50:
-                    recent_lines.pop(0)
-                if "out_time_us=" in line:
-                    match = re.search(r"out_time_us=(\d+)", line)
-                    if match and total_duration > 0:
-                        current_sec = int(match.group(1)) / 1_000_000.0
-                        fraction = min(1.0, current_sec / total_duration)
-                        prog = 20.0 + fraction * 78.0
-                        update_task_progress(
-                            task_id,
-                            round(prog, 1),
-                            f"Compiling with watermark ({prog:.0f}%)...",
-                            detail=f"{current_sec:.1f}s / {total_duration:.1f}s processed"
-                        )
-
-            process.wait(timeout=1200)
-
-            if process.returncode != 0:
-                stderr_out = "".join(recent_lines)
-                update_task_progress(task_id, 0.0, "Compilation failed", detail=stderr_out[:200], status="error")
-                return jsonify({
-                    "success": False,
-                    "error": "FFmpeg could not compile the Shorts.",
-                    "details": stderr_out[-3000:]
-                }), 500
+        if process.returncode != 0:
+            stderr_out = "".join(recent_lines)
+            update_task_progress(task_id, 0.0, "Compilation failed", detail=stderr_out[:200], status="error")
+            return jsonify({
+                "success": False,
+                "error": "FFmpeg could not compile the Shorts.",
+                "details": stderr_out[-3000:]
+            }), 500
 
         update_task_progress(
             task_id,
@@ -1209,10 +1170,7 @@ def compile_shorts():
             status="completed"
         )
 
-        if not os.path.exists(
-            output_file
-        ):
-
+        if not os.path.exists(output_file):
             return jsonify({
                 "success": False,
                 "error": "Compilation finished, but the output MP4 was not found."
@@ -1220,15 +1178,12 @@ def compile_shorts():
 
         print()
         print("=" * 60)
-
         if watermark:
             print("COMPILATION + WATERMARK SUCCESSFUL")
         else:
             print("COMPILATION SUCCESSFUL")
-
         print("=" * 60)
         print()
-
         print("Final compilation:")
         print(output_file)
         print()
@@ -1236,7 +1191,8 @@ def compile_shorts():
         if return_json:
             return jsonify({
                 "success": True,
-                "filename": f"compilation_{compile_id}.mp4"
+                "filename": f"compilation_{compile_id}.mp4",
+                "download_url": f"/file/compilation_{compile_id}.mp4"
             })
 
         return send_file(
@@ -1247,14 +1203,12 @@ def compile_shorts():
         )
 
     except subprocess.TimeoutExpired:
-
         return jsonify({
             "success": False,
             "error": "Compilation timed out."
         }), 500
 
     except Exception as e:
-
         print()
         print("=" * 60)
         print("COMPILATION ERROR")
@@ -1268,26 +1222,9 @@ def compile_shorts():
         }), 500
 
     finally:
-
-        if os.path.exists(
-            concat_file
-        ):
-
+        if os.path.exists(watermark_file):
             try:
-                os.remove(
-                    concat_file
-                )
-            except OSError:
-                pass
-
-        if os.path.exists(
-            watermark_file
-        ):
-
-            try:
-                os.remove(
-                    watermark_file
-                )
+                os.remove(watermark_file)
             except OSError:
                 pass
 

@@ -1163,50 +1163,53 @@ async function downloadShort(
                 );
 
             if (disposition) {
-
                 const match =
                     disposition.match(
                         /filename="?([^"]+)"?/i
                     );
-
                 if (match) {
-
-                    filename =
-                        match[1];
-
+                    filename = match[1];
                 }
-
             }
 
-            const blob =
-                await response.blob();
+            const xFilename = response.headers.get("X-Filename");
+            if (xFilename) {
+                filename = xFilename;
+            }
 
-            const blobUrl =
-                window.URL.createObjectURL(
-                    blob
-                );
+            if (!filename) {
+                const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+                if (urlMatch) {
+                    filename = `short_${urlMatch[1]}.mp4`;
+                }
+            }
 
-            const link =
-                document.createElement("a");
+            const saveFilename = filename || "short.mp4";
+            const blob = await response.blob();
+            const blobUrl = window.URL.createObjectURL(blob);
 
-            link.href =
-                blobUrl;
-
-            link.download =
-                filename ||
-                "short.mp4";
-
-            document.body.appendChild(
-                link
-            );
-
-            link.click();
-
-            link.remove();
-
-            window.URL.revokeObjectURL(
-                blobUrl
-            );
+            if (ext && ext.downloads?.download) {
+                try {
+                    const dlPromise = ext.downloads.download({
+                        url: blobUrl,
+                        filename: saveFilename,
+                        saveAs: false
+                    }, (downloadId) => {
+                        if (ext.runtime?.lastError) {
+                            triggerAnchorDownload(blobUrl, saveFilename);
+                        }
+                    });
+                    if (dlPromise && typeof dlPromise.catch === "function") {
+                        dlPromise.catch(() => {
+                            triggerAnchorDownload(blobUrl, saveFilename);
+                        });
+                    }
+                } catch {
+                    triggerAnchorDownload(blobUrl, saveFilename);
+                }
+            } else {
+                triggerAnchorDownload(blobUrl, saveFilename);
+            }
         }
 
         if (filename) {
@@ -1589,70 +1592,41 @@ async function compileSelected() {
     });
 
     try {
+        await refreshDownloadedFiles();
 
-        /*
-         * First make sure every selected Short
-         * is downloaded.
-         *
-         * This uses parallel downloads.
-         */
+        // 1. Identify which selected shorts need downloading
+        const shortsToDownload = selectedShorts.filter(function (short) {
+            const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            const inferred = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
 
-        const shortsToDownload =
-            selectedShorts.filter(
-                function (short) {
+            if (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) {
+                return false;
+            }
+            if (inferred && downloadedFiles[inferred]) {
+                short.downloadedFilename = inferred;
+                return false;
+            }
+            return true;
+        });
 
-                    return !(
-                        short.downloadedFilename &&
-                        downloadedFiles[
-                            short.downloadedFilename
-                        ]
-                    );
+        // 2. Download missing clips concurrently
+        if (shortsToDownload.length > 0) {
+            compileTracker.start(`Downloading ${shortsToDownload.length} missing clips...`, 5);
+            status.textContent = `Downloading ${shortsToDownload.length} selected Shorts...`;
 
-                }
-            );
-
-        if (
-            shortsToDownload.length > 0
-        ) {
-
-            compileTracker.start("Preparing missing video clips...", 5);
-            status.textContent =
-                `Downloading ${shortsToDownload.length} selected Shorts...`;
-
-            const MAX_CONCURRENT =
-                3;
-
-            let nextIndex =
-                0;
-
-            let completed =
-                0;
+            const MAX_CONCURRENT = 3;
+            let nextIndex = 0;
+            let completed = 0;
 
             async function worker() {
-
                 while (true) {
-
-                    const currentIndex =
-                        nextIndex++;
-
-                    if (
-                        currentIndex >=
-                        shortsToDownload.length
-                    ) {
-
+                    const currentIndex = nextIndex++;
+                    if (currentIndex >= shortsToDownload.length) {
                         return;
-
                     }
 
-                    const short =
-                        shortsToDownload[
-                            currentIndex
-                        ];
-
-                    const individualButton =
-                        document.getElementById(
-                            `download-button-${short.index}`
-                        );
+                    const short = shortsToDownload[currentIndex];
+                    const individualButton = document.getElementById(`download-button-${short.index}`);
 
                     const prepPct = Math.round(5 + (completed / shortsToDownload.length) * 30);
                     compileTracker.update(
@@ -1660,9 +1634,6 @@ async function compileSelected() {
                         `Preparing clips (${completed + 1}/${shortsToDownload.length})...`,
                         short.title.slice(0, 35) + "..."
                     );
-
-                    status.textContent =
-                        `Downloading selected Shorts (${completed + 1}/${shortsToDownload.length})...`;
 
                     if (individualButton) {
                         individualButton.disabled = true;
@@ -1684,7 +1655,7 @@ async function compileSelected() {
 
                         if (!res.ok) {
                             const errData = await res.json().catch(() => ({}));
-                            throw new Error(errData.error || `HTTP ${res.status}`);
+                            throw new Error(errData.details || errData.error || `HTTP ${res.status}`);
                         }
 
                         const data = await res.json();
@@ -1698,11 +1669,7 @@ async function compileSelected() {
                             }
                         }
                     } catch (error) {
-                        console.error(
-                            "Download failed during compilation:",
-                            short.title,
-                            error
-                        );
+                        console.error("Download failed during compilation preparation:", short.title, error);
                         if (individualButton) {
                             individualButton.textContent = "DOWNLOAD";
                             individualButton.disabled = false;
@@ -1710,238 +1677,143 @@ async function compileSelected() {
                     }
 
                     completed++;
-
                     const donePrepPct = Math.round(5 + (completed / shortsToDownload.length) * 30);
                     compileTracker.update(
                         donePrepPct,
                         `Prepared ${completed}/${shortsToDownload.length} clips...`,
                         `Finished: ${short.title.slice(0, 30)}`
                     );
-
-                    status.textContent =
-                        `Downloaded ${completed}/${shortsToDownload.length} new Shorts...`;
-
                 }
-
             }
 
-            const workerCount =
-                Math.min(
-                    MAX_CONCURRENT,
-                    shortsToDownload.length
-                );
-
+            const workerCount = Math.min(MAX_CONCURRENT, shortsToDownload.length);
             const workers = [];
-
-            for (
-                let i = 0;
-                i < workerCount;
-                i++
-            ) {
-
-                workers.push(
-                    worker()
-                );
-
+            for (let i = 0; i < workerCount; i++) {
+                workers.push(worker());
             }
-
-            await Promise.all(
-                workers
-            );
-
+            await Promise.all(workers);
+            await refreshDownloadedFiles();
         }
 
-        await refreshDownloadedFiles();
-
+        // 3. Collect filenames to compile preserving search result order
         const filesToCompile = [];
+        for (let i = 0; i < selectedShorts.length; i++) {
+            const short = selectedShorts[i];
+            const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            const inferred = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
 
-        /*
-         * Preserve the exact order in which the
-         * Shorts appear in the search results.
-         */
-
-        for (
-            let i = 0;
-            i < selectedShorts.length;
-            i++
-        ) {
-
-            const short =
-                selectedShorts[i];
-
-            if (
-                short.downloadedFilename &&
-                downloadedFiles[
-                    short.downloadedFilename
-                ]
-            ) {
-
-                filesToCompile.push(
-                    short.downloadedFilename
-                );
-
+            let resolvedName = null;
+            if (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) {
+                resolvedName = short.downloadedFilename;
+            } else if (inferred && downloadedFiles[inferred]) {
+                resolvedName = inferred;
+                short.downloadedFilename = inferred;
             }
 
+            if (resolvedName) {
+                filesToCompile.push(resolvedName);
+            }
         }
 
-        if (
-            filesToCompile.length < 2
-        ) {
-
+        if (filesToCompile.length < 2) {
             throw new Error(
-                "Could not identify at least 2 downloaded Shorts."
+                `Only ${filesToCompile.length} of ${selectedShorts.length} clips were prepared. Please ensure at least 2 Shorts are downloaded.`
             );
-
         }
 
         const compileTaskId = "compile_" + Date.now();
-        if (watermark) {
-            compileTracker.start(`Compiling ${filesToCompile.length} Shorts with watermark...`, 40);
-            status.textContent =
-                `Compiling ${filesToCompile.length} Shorts with watermark...`;
-        }
-        else {
-            compileTracker.start(`Compiling ${filesToCompile.length} Shorts without watermark...`, 40);
-            status.textContent =
-                `Compiling ${filesToCompile.length} Shorts without watermark...`;
-        }
+        const startMsg = watermark
+            ? `Compiling ${filesToCompile.length} Shorts with watermark...`
+            : `Compiling ${filesToCompile.length} Shorts...`;
 
+        compileTracker.start(startMsg, 35);
+        status.textContent = startMsg;
         compileTracker.pollTask(compileTaskId);
 
-        compileButton.textContent =
-            "COMPILING...";
+        compileButton.textContent = "COMPILING...";
+        const compileStartTime = performance.now();
 
-        const compileStartTime =
-            performance.now();
-
-        const response =
-            await fetch(
-                `${BACKEND_URL}/compile`,
-                {
-
-                    method: "POST",
-
-                    headers: {
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-
-                        files:
-                            filesToCompile,
-
-                        watermark:
-                            watermark,
-
-                        task_id:
-                            compileTaskId
-
-                    })
-
-                }
-            );
+        const response = await fetch(`${BACKEND_URL}/compile`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                files: filesToCompile,
+                watermark: watermark,
+                task_id: compileTaskId,
+                return_json: true
+            })
+        });
 
         if (!response.ok) {
-
-            let errorMessage =
-                "Compilation failed.";
-
+            let errorMessage = "Compilation failed.";
             try {
-
-                const errorData =
-                    await response.json();
-
-                errorMessage =
-                    errorData.error ||
-                    errorData.details ||
-                    errorMessage;
-
-            }
-
-            catch (error) {
+                const errorData = await response.json();
+                errorMessage = errorData.error || errorData.details || errorMessage;
+            } catch (error) {
                 // Ignore JSON parsing errors.
             }
-
-            throw new Error(
-                errorMessage
-            );
-
+            throw new Error(errorMessage);
         }
 
         compileTracker.update(98, "Saving compiled video...", "Downloading compilation file...");
 
-        const blob =
-            await response.blob();
+        const contentType = response.headers.get("Content-Type") || "";
+        let downloadUrl = null;
+        const finalFilename = "shortbot_compilation.mp4";
 
-        const blobUrl =
-            window.URL.createObjectURL(
-                blob
-            );
-
-        if (ext && ext.downloads?.download) {
-            try {
-                ext.downloads.download({
-                    url: blobUrl,
-                    filename: "shortbot_compilation.mp4",
-                    saveAs: true
-                }, function () {
-                    if (ext.runtime?.lastError) {
-                        const link = document.createElement("a");
-                        link.href = blobUrl;
-                        link.download = "shortbot_compilation.mp4";
-                        document.body.appendChild(link);
-                        link.click();
-                        link.remove();
-                    }
-                });
-            } catch {
-                const link = document.createElement("a");
-                link.href = blobUrl;
-                link.download = "shortbot_compilation.mp4";
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
+        if (contentType.includes("application/json")) {
+            const resultData = await response.json();
+            if (!resultData.success) {
+                throw new Error(resultData.error || resultData.details || "Compilation failed on backend.");
             }
+            const serverFilename = resultData.filename || `compilation_${compileTaskId}.mp4`;
+            const base = BACKEND_URL || "http://127.0.0.1:5000";
+            downloadUrl = `${base}/file/${serverFilename}`;
         } else {
-            const link =
-                document.createElement("a");
-
-            link.href =
-                blobUrl;
-
-            link.download =
-                "shortbot_compilation.mp4";
-
-            document.body.appendChild(
-                link
-            );
-
-            link.click();
-
-            link.remove();
+            const blob = await response.blob();
+            downloadUrl = window.URL.createObjectURL(blob);
         }
 
-        const compileElapsedSeconds =
-            (
-                performance.now() -
-                compileStartTime
-            ) / 1000;
+        // Trigger native download
+        if (ext && ext.downloads?.download) {
+            try {
+                const dlReq = ext.downloads.download({
+                    url: downloadUrl,
+                    filename: finalFilename,
+                    saveAs: true
+                }, (downloadId) => {
+                    if (ext.runtime?.lastError) {
+                        triggerAnchorDownload(downloadUrl, finalFilename);
+                    }
+                });
+                if (dlReq && typeof dlReq.catch === "function") {
+                    dlReq.catch((err) => {
+                        console.warn("downloads.download failed, fallback to anchor:", err);
+                        triggerAnchorDownload(downloadUrl, finalFilename);
+                    });
+                }
+            } catch (dlErr) {
+                triggerAnchorDownload(downloadUrl, finalFilename);
+            }
+        } else {
+            triggerAnchorDownload(downloadUrl, finalFilename);
+        }
 
+        const compileElapsedSeconds = (performance.now() - compileStartTime) / 1000;
         compileTracker.complete(`Compilation complete in ${compileElapsedSeconds.toFixed(1)}s! ✓`);
         compileTracker.hide(7000);
 
-        status.textContent =
-            watermark
-                ? `Compilation complete! ${filesToCompile.length} Shorts combined with watermark in ${compileElapsedSeconds.toFixed(
-                    1
-                )}s. ✓`
-                : `Compilation complete! ${filesToCompile.length} Shorts combined in ${compileElapsedSeconds.toFixed(
-                    1
-                )}s. ✓`;
+        status.textContent = watermark
+            ? `Compilation complete! ${filesToCompile.length} Shorts combined with watermark in ${compileElapsedSeconds.toFixed(1)}s. ✓`
+            : `Compilation complete! ${filesToCompile.length} Shorts combined in ${compileElapsedSeconds.toFixed(1)}s. ✓`;
 
-        compileButton.textContent =
-            "COMPILED ✓";
+        compileButton.textContent = "COMPILED ✓";
+        setTimeout(() => {
+            compileButton.textContent = "COMPILE SELECTED";
+        }, 5000);
+    }
 
     }
 
@@ -2123,10 +1995,17 @@ function renderShorts(
     shorts =
         foundShorts.map(
             function (short, index) {
+                const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+                const inferredFilename = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
+                const isDownloaded = Boolean(
+                    (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) ||
+                    (inferredFilename && downloadedFiles[inferredFilename])
+                );
 
                 return {
                     ...short,
-                    index: index
+                    index: index,
+                    downloadedFilename: short.downloadedFilename || (isDownloaded ? inferredFilename : null)
                 };
 
             }
@@ -2237,8 +2116,11 @@ function renderShorts(
             downloadButton.id =
                 `download-button-${short.index}`;
 
-            downloadButton.textContent =
-                "DOWNLOAD";
+            const isAlreadyDownloaded = Boolean(short.downloadedFilename && downloadedFiles[short.downloadedFilename]);
+            downloadButton.textContent = isAlreadyDownloaded ? "DOWNLOADED ✓" : "DOWNLOAD";
+            if (isAlreadyDownloaded) {
+                downloadButton.dataset.downloaded = "true";
+            }
 
             downloadButton.className =
                 "download-button";
