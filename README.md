@@ -1,74 +1,131 @@
-# ShortBot ⚡
+# ShortBot
 
-> **AI-Powered YouTube Shorts Curator, Downloader, and Video Compiler.**  
-> Built as a modern **Firefox WebExtension** backed by a **zero-dependency Windows Desktop Companion Engine**.
+> AI-Powered YouTube Shorts Curator, Downloader, and Video Compiler.  
+> Built as a modern Firefox WebExtension backed by a zero-dependency Windows Desktop Companion Engine.
 
 ---
 
-## ✨ Features
+## Features
 
-- **🧠 Dual AI Curation Engine**:
+- **Dual AI Curation Engine**:
   - **Cloud Mode**: Direct integration with Google Gemini Flash API for high-level semantic filtering and reasoning.
   - **Offline NLP Engine**: Built-in, zero-dependency tokenization, semantic scoring, and relevance classification that works 100% offline.
-  - **No Ollama Required**: Runs smoothly on any PC without heavy local LLMs or gigabytes of VRAM.
-- **⚡ Blazing Fast In-Process Downloads**:
-  - Embedded `yt-dlp` stream resolver with real-time percentage, speed, and ETA hooks.
-  - Automatic multi-client fallback strategies (`android`, `ios`, `web`) to bypass 429 rate limits and bot challenges.
-- **🎨 Custom Watermarking & Branding**:
-  - Dynamically brand downloaded shorts with customizable text, positioning, and styling using bundled FFmpeg.
-- **🎬 One-Click Compilation**:
-  - Seamlessly merge multiple curated shorts into a single video with normalized aspect ratios, frame rates, and audio streams.
-- **🦊 Native Firefox & Chromium Support**:
-  - Manifest V3 WebExtension supporting Mozilla Firefox (Promises/`browser.runtime`) and Chromium (`chrome.runtime`).
+  - **No Ollama Required**: Runs on any PC without local LLM downloads or GPU requirements.
+- **Fast In-Process Downloads**:
+  - Embedded stream resolver with real-time percentage, speed, and ETA hooks.
+  - Automatic multi-client fallback strategies (android, ios, web) to bypass rate limits and bot challenges.
+- **Custom Watermarking and Branding**:
+  - Dynamically brand downloaded shorts with customizable text and styling using bundled FFmpeg.
+- **Direct Video URL Downloader**:
+  - Paste any YouTube video or Shorts URL to download immediately with one click.
+- **One-Click Compilation**:
+  - Merge multiple curated shorts into a single video with normalized aspect ratios, frame rates, and audio streams.
+- **Native Firefox and Chromium Support**:
+  - Manifest V3 WebExtension supporting Mozilla Firefox (Promises/browser.runtime) and Chromium (chrome.runtime).
   - Native Messaging Host bridges browser extension requests directly to the companion engine with silent auto-launch.
+- **Dark Mode UI**:
+  - Sleek dark theme styled in Century Gothic typography.
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────┐
-│     Mozilla Firefox Add-on      │
-│  (Modern MV3 Glassmorphism UI)  │
-└────────────────┬────────────────┘
-                 │ Native Messaging / HTTP
-                 ▼
-┌─────────────────────────────────┐
-│   ShortBot Companion Engine     │
-│   (Standalone Windows Binary)   │
-├────────────────┬────────────────┤
-│  Native Host   │  Bundled FFmpeg│
-│  (stdio bridge)│  (watermark &  │
-│                │   compilation) │
-├────────────────┴────────────────┤
-│       Dual AI Curator           │
-│  Gemini Flash API + Offline NLP │
-└─────────────────────────────────┘
++---------------------------------+
+|     Mozilla Firefox Add-on      |
+|  (Modern MV3 Dark Mode UI)      |
++----------------+----------------+
+                 | Native Messaging / HTTP
+                 v
++---------------------------------+
+|   ShortBot Companion Engine     |
+|   (Standalone Windows Binary)   |
++----------------+----------------+
+|  Native Host   |  Bundled FFmpeg|
+|  (stdio bridge)|  (watermark &  |
+|                |   compilation) |
++----------------+----------------+
+|       Dual AI Curator           |
+|  Gemini Flash API + Offline NLP |
++---------------------------------+
 ```
 
 ---
 
-## 🚀 Quick Start (For Users)
+## Repository Structure
+
+```
+ShortBot/
+├── ui/                              # Firefox & WebExtension MV3 Source
+│   ├── app.js                       # Extension logic and native messaging bridge
+│   ├── index.html                   # Dark Mode UI
+│   ├── style.css                    # Century Gothic styling
+│   ├── manifest.json                # WebExtension manifest (v1.1.0)
+│   └── icons/                       # Extension icons
+├── docs/                            # Documentation and benchmarks
+│   └── TIMINGS_AND_BENCHMARKS.md    # Performance benchmarks
+├── backend.py                       # Local Flask engine & stream processing
+├── agent.py                         # Curation orchestration pipeline
+├── ai_engine.py                     # Gemini Flash API & local NLP classifier
+├── classifier.py                    # Multi-factor relevance scoring
+├── request_parser.py                # Query intent parser
+├── native_host.py                   # Native messaging stdio protocol bridge
+├── build_companion_engine.py        # PyInstaller companion packaging script
+├── package_firefox_extension.py     # Firefox XPI and ZIP packager
+├── register_native_host.bat         # Native host registration utility
+├── installer.iss                    # Inno Setup compiler configuration
+└── requirements.txt                 # Python developer dependencies
+```
+
+---
+
+## Quick Start (For Users)
 
 ### 1. Run the Desktop Companion Engine
 1. Extract `ShortBot-Engine-Windows.zip` or open the `ShortBot-Engine` folder.
-2. Double-click **`Install-ShortBot.bat`**.
+2. Double-click `Install-ShortBot.bat`.
    - This automatically registers the native host for Firefox, Edge, and Chrome, and starts the companion engine silently.
 
 ### 2. Load the Firefox Extension
-1. Open **Mozilla Firefox** and go to `about:debugging#/runtime/this-firefox`.
-2. Click **"Load Temporary Add-on..."**.
+1. Open Mozilla Firefox and go to `about:debugging#/runtime/this-firefox`.
+2. Click "Load Temporary Add-on...".
 3. Select `shortbot-firefox.xpi` (or `ui/manifest.json`).
-4. Click the ShortBot icon in your toolbar and start curating Shorts!
+4. Click the ShortBot icon in your toolbar and start curating Shorts.
 
 ---
 
-## 🛠️ Developer Guide
+## Testing on Another Computer (Friend's PC)
+
+Your friend does not need Python, Node.js, FFmpeg, or Ollama installed. Everything is pre-bundled in the companion release.
+
+### Step-by-Step Instructions:
+
+1. **Send the two files to your friend**:
+   - `ShortBot-Engine-Windows.zip` (the standalone engine)
+   - `shortbot-firefox.xpi` (the Firefox extension)
+
+2. **On your friend's PC**:
+   - **Step A: Extract Engine**
+     - Right-click `ShortBot-Engine-Windows.zip` and select **Extract All**.
+     - Open the extracted folder and double-click `Install-ShortBot.bat`.
+     - A terminal window will open, register the native host in their Windows registry for Firefox/Chrome/Edge, start the engine silently in the background, and close automatically.
+   - **Step B: Load Extension in Firefox**
+     - Open Firefox and navigate to: `about:debugging#/runtime/this-firefox`.
+     - Click **Load Temporary Add-on...**.
+     - Select the `shortbot-firefox.xpi` file.
+   - **Step C: Test Download & Curation**
+     - Click the ShortBot icon in the Firefox toolbar.
+     - The status badge in the top right will show **Backend Online** with a green dot.
+     - Paste any YouTube Shorts URL into the "Download by URL" box and click Download, or type a topic in "What Shorts are you looking for?" and click "Find Shorts".
+     - The video will download and save directly to their standard Downloads folder.
+
+---
+
+## Developer Guide
 
 ### Prerequisites
 - Python 3.10+
 - FFmpeg (optional in dev, auto-bundled in production build)
-- Node.js (optional for enhanced signature decryption)
 
 ### Running Locally
 ```powershell
@@ -106,17 +163,11 @@ python build_companion_engine.py
 
 ---
 
-## ⚙️ Configuration & AI Modes
+## Configuration & AI Modes
 
-ShortBot works out-of-the box in **Offline NLP Mode** with zero configuration required.
+ShortBot works out-of-the-box in **Offline NLP Mode** with zero configuration required.
 
 To enable advanced Gemini Cloud AI:
 1. Open the ShortBot extension popup.
-2. Open Settings and enter your **Google Gemini API Key**.
+2. Open Settings and enter your Google Gemini API Key.
 3. ShortBot will automatically leverage Gemini 2.5/1.5 Flash for deep semantic reasoning while keeping the offline engine as an instant fallback.
-
----
-
-## 📄 License
-
-MIT License. Built for creators and developers.
