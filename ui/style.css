@@ -619,13 +619,13 @@ input::placeholder {
     font-style: italic;
 }
 
-/* Inline Form Row (Quantity + Watermark on Same Line) */
+/* Inline Form Row (Quantity + Watermark Perfectly Lined Up) */
 .form-row {
     display: flex;
     gap: 16px;
     align-items: flex-start;
     width: 100%;
-    margin-top: 4px;
+    margin-top: 6px;
 }
 
 .form-group {
@@ -635,12 +635,26 @@ input::placeholder {
 
 .form-group label {
     margin-top: 0;
-    margin-bottom: 6px;
+    margin-bottom: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    height: 20px;
+    display: flex;
+    align-items: center;
+}
+
+.form-group input {
+    height: 42px;
+    padding: 10px 14px;
+    box-sizing: border-box;
 }
 
 .form-group-sm {
-    flex: 0 0 130px;
-    max-width: 130px;
+    flex: 0 0 160px;
+    width: 160px;
+    max-width: 160px;
 }
 
 .form-group-sm input {
@@ -650,6 +664,7 @@ input::placeholder {
 
 .form-group-lg {
     flex: 1;
+    min-width: 0;
 }
 
 .form-group-lg input {
@@ -658,7 +673,7 @@ input::placeholder {
 }
 
 .form-group-lg .field-help {
-    margin-top: 5px;
+    margin-top: 6px;
     margin-bottom: 0;
 }
 
