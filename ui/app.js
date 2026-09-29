@@ -16,10 +16,648 @@ const results =
 const status =
     document.getElementById("status");
 
+const openTabButton =
+    document.getElementById("openTabButton");
+
 
 let shorts = [];
 
 let downloadedFiles = {};
+
+const BACKEND_URL = (window.location.protocol.startsWith("http") && window.location.port === "5000")
+    ? ""
+    : "http://127.0.0.1:5000";
+
+
+// --------------------------------------------------
+// UNIVERSAL WEBEXTENSION API (FIREFOX + CHROMIUM)
+// --------------------------------------------------
+
+const ext = (typeof browser !== "undefined" && browser.runtime) 
+    ? browser 
+    : (typeof chrome !== "undefined" && chrome.runtime ? chrome : null);
+
+// --------------------------------------------------
+// PERSISTENT STORAGE HELPER
+// --------------------------------------------------
+
+const storage = {
+    async get(keys) {
+        if (ext && ext.storage?.local) {
+            return new Promise((resolve) => {
+                try {
+                    const req = ext.storage.local.get(keys);
+                    if (req && typeof req.then === "function") {
+                        req.then((res) => resolve(res || {})).catch(() => resolve({}));
+                    } else {
+                        ext.storage.local.get(keys, (res) => resolve(res || {}));
+                    }
+                } catch {
+                    resolve({});
+                }
+            });
+        }
+        const result = {};
+        const keyList = Array.isArray(keys) ? keys : [keys];
+        for (const k of keyList) {
+            const val = localStorage.getItem(`shortbot_${k}`);
+            if (val !== null) {
+                try {
+                    result[k] = JSON.parse(val);
+                } catch {
+                    result[k] = val;
+                }
+            }
+        }
+        return result;
+    },
+
+    async set(items) {
+        if (ext && ext.storage?.local) {
+            return new Promise((resolve) => {
+                try {
+                    const req = ext.storage.local.set(items);
+                    if (req && typeof req.then === "function") {
+                        req.then(() => resolve()).catch(() => resolve());
+                    } else {
+                        ext.storage.local.set(items, () => resolve());
+                    }
+                } catch {
+                    resolve();
+                }
+            });
+        }
+        for (const [k, v] of Object.entries(items)) {
+            localStorage.setItem(`shortbot_${k}`, JSON.stringify(v));
+        }
+    },
+
+    async remove(keys) {
+        if (ext && ext.storage?.local) {
+            return new Promise((resolve) => {
+                try {
+                    const req = ext.storage.local.remove(keys);
+                    if (req && typeof req.then === "function") {
+                        req.then(() => resolve()).catch(() => resolve());
+                    } else {
+                        ext.storage.local.remove(keys, () => resolve());
+                    }
+                } catch {
+                    resolve();
+                }
+            });
+        }
+        const keyList = Array.isArray(keys) ? keys : [keys];
+        for (const k of keyList) {
+            localStorage.removeItem(`shortbot_${k}`);
+        }
+    }
+};
+
+async function sendNativeHostMessage(message) {
+    if (!ext || !ext.runtime) return null;
+    try {
+        // Firefox browser.runtime.sendNativeMessage returns Promise
+        if (typeof browser !== "undefined" && browser.runtime?.sendNativeMessage) {
+            try {
+                return await browser.runtime.sendNativeMessage("com.shortbot.backend", message);
+            } catch (e) {
+                console.warn("[ShortBot] Firefox native messaging error:", e);
+                return null;
+            }
+        }
+        // Chrome / Edge callback-based
+        if (typeof chrome !== "undefined" && chrome.runtime?.sendNativeMessage) {
+            return await new Promise((resolve) => {
+                chrome.runtime.sendNativeMessage("com.shortbot.backend", message, (res) => {
+                    if (chrome.runtime.lastError) {
+                        console.warn("[ShortBot] Chrome native messaging error:", chrome.runtime.lastError.message);
+                    }
+                    resolve(res || null);
+                });
+            });
+        }
+    } catch (err) {
+        console.warn("[ShortBot] sendNativeHostMessage exception:", err);
+    }
+    return null;
+}
+
+
+// --------------------------------------------------
+// PROGRESS TRACKER HELPER
+// --------------------------------------------------
+
+class ProgressTracker {
+    constructor({ container, fill, percent, stage, timer, detail }) {
+        this.containerEl = typeof container === "string" ? document.getElementById(container) : container;
+        this.fillEl = typeof fill === "string" ? document.getElementById(fill) : fill;
+        this.percentEl = typeof percent === "string" ? document.getElementById(percent) : percent;
+        this.stageEl = typeof stage === "string" ? document.getElementById(stage) : stage;
+        this.timerEl = typeof timer === "string" ? document.getElementById(timer) : timer;
+        this.detailEl = typeof detail === "string" ? document.getElementById(detail) : detail;
+
+        this.intervalId = null;
+        this.timerIntervalId = null;
+        this.startTime = null;
+    }
+
+    start(initialStage = "Starting...", initialPercent = 5) {
+        if (this.containerEl) {
+            this.containerEl.style.display = "block";
+            this.containerEl.classList.remove("error", "completed");
+            this.containerEl.classList.add("active");
+        }
+        this.startTime = performance.now();
+        this.update(initialPercent, initialStage, "Initializing...");
+
+        clearInterval(this.timerIntervalId);
+        this.timerIntervalId = setInterval(() => {
+            const elapsedMs = performance.now() - this.startTime;
+            const totalSec = Math.floor(elapsedMs / 1000);
+            const mins = String(Math.floor(totalSec / 60)).padStart(2, "0");
+            const secs = String(totalSec % 60).padStart(2, "0");
+            if (this.timerEl) {
+                this.timerEl.textContent = `⏱ ${mins}:${secs}`;
+            }
+        }, 500);
+    }
+
+    update(percent, stage, detail) {
+        const clamped = Math.min(100, Math.max(0, Math.round(percent)));
+        if (this.fillEl) this.fillEl.style.width = `${clamped}%`;
+        if (this.percentEl) this.percentEl.textContent = `${clamped}%`;
+        if (stage && this.stageEl) this.stageEl.textContent = stage;
+        if (detail !== undefined && this.detailEl) this.detailEl.textContent = detail;
+    }
+
+    pollTask(taskId) {
+        if (!taskId) return;
+        clearInterval(this.intervalId);
+        this.intervalId = setInterval(async () => {
+            try {
+                const ctrl = new AbortController();
+                const to = setTimeout(() => ctrl.abort(), 1200);
+                const res = await fetch(`${BACKEND_URL}/progress/${taskId}`, { signal: ctrl.signal });
+                clearTimeout(to);
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.success && data.progress) {
+                        const p = data.progress;
+                        this.update(p.percent, p.stage, p.detail);
+                        if (p.status === "completed") {
+                            this.complete(p.stage || "Complete! ✓");
+                        } else if (p.status === "error") {
+                            this.fail(p.detail || "Operation failed");
+                        }
+                    }
+                }
+            } catch {
+                // Ignore transient network hiccups
+            }
+        }, 350);
+    }
+
+    complete(finalMessage = "Complete! ✓") {
+        clearInterval(this.intervalId);
+        clearInterval(this.timerIntervalId);
+        this.update(100, finalMessage, "Finished successfully.");
+        if (this.containerEl) {
+            this.containerEl.classList.remove("active");
+            this.containerEl.classList.add("completed");
+        }
+    }
+
+    fail(errorMessage = "Failed") {
+        clearInterval(this.intervalId);
+        clearInterval(this.timerIntervalId);
+        if (this.stageEl) this.stageEl.textContent = "Failed";
+        if (this.detailEl) this.detailEl.textContent = errorMessage;
+        if (this.containerEl) {
+            this.containerEl.classList.remove("active");
+            this.containerEl.classList.add("error");
+        }
+    }
+
+    hide(delayMs = 4000) {
+        clearInterval(this.intervalId);
+        clearInterval(this.timerIntervalId);
+        if (delayMs > 0) {
+            setTimeout(() => {
+                if (this.containerEl) this.containerEl.style.display = "none";
+            }, delayMs);
+        } else {
+            if (this.containerEl) this.containerEl.style.display = "none";
+        }
+    }
+}
+
+
+// --------------------------------------------------
+// SAVE & RESTORE STATE
+// --------------------------------------------------
+
+async function saveAppState() {
+    try {
+        const watermarkCheckbox = document.getElementById("activeWatermarkCheckbox");
+        await storage.set({
+            savedRequest: requestInput.value,
+            savedQuantity: quantityInput.value,
+            savedWatermark: watermarkInput.value,
+            savedActiveWatermarkCheckbox: watermarkCheckbox ? watermarkCheckbox.checked : false,
+            savedShorts: shorts,
+            savedStatusText: status.textContent
+        });
+    } catch (e) {
+        console.warn("Could not save state:", e);
+    }
+}
+
+async function restoreAppState() {
+    try {
+        const data = await storage.get([
+            "savedRequest",
+            "savedQuantity",
+            "savedWatermark",
+            "savedActiveWatermarkCheckbox",
+            "savedShorts",
+            "savedStatusText"
+        ]);
+
+        if (data.savedRequest && !requestInput.value) {
+            requestInput.value = data.savedRequest;
+        }
+        if (data.savedQuantity) {
+            quantityInput.value = data.savedQuantity;
+        }
+        if (data.savedWatermark && !watermarkInput.value) {
+            watermarkInput.value = data.savedWatermark;
+        }
+        const watermarkCheckbox = document.getElementById("activeWatermarkCheckbox");
+        if (watermarkCheckbox && data.savedActiveWatermarkCheckbox !== undefined) {
+            watermarkCheckbox.checked = Boolean(data.savedActiveWatermarkCheckbox);
+        }
+
+        if (Array.isArray(data.savedShorts) && data.savedShorts.length > 0) {
+            if (data.savedStatusText) {
+                status.textContent = data.savedStatusText;
+            } else {
+                status.textContent = `Found ${data.savedShorts.length} relevant Shorts.`;
+            }
+            renderShorts(data.savedShorts);
+        }
+    } catch (e) {
+        console.warn("Could not restore state:", e);
+    }
+}
+
+function clearResults() {
+    shorts = [];
+    downloadedFiles = {};
+    document.querySelectorAll(".short-card").forEach((card) => card.remove());
+    const oldControls = document.getElementById("selectionControls");
+    if (oldControls) {
+        oldControls.remove();
+    }
+    status.textContent = 'Enter a request and click "Find Shorts".';
+    storage.remove(["savedShorts", "savedStatusText"]);
+}
+
+
+
+// --------------------------------------------------
+// BACKEND HEALTH & AUTO-START
+// --------------------------------------------------
+
+async function checkAndAutoStartBackend() {
+    const badge = document.getElementById("serverBadge");
+    const badgeText = document.getElementById("serverBadgeText");
+    if (!badge || !badgeText) return;
+
+    async function ping() {
+        try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 2500);
+            const res = await fetch(`${BACKEND_URL}/health`, { signal: controller.signal });
+            clearTimeout(timer);
+            return res.ok;
+        } catch {
+            return false;
+        }
+    }
+
+    const notice = document.getElementById("engineNotice");
+    const btnRetry = document.getElementById("btnRetryEngine");
+    if (btnRetry) {
+        btnRetry.onclick = () => {
+            badge.className = "server-badge checking";
+            badgeText.textContent = "Checking...";
+            checkAndAutoStartBackend();
+        };
+    }
+
+    let ok = await ping();
+    if (ok) {
+        badge.className = "server-badge online";
+        badgeText.textContent = "Backend Online";
+        if (notice) notice.style.display = "none";
+        refreshDownloadedFiles();
+        return true;
+    }
+
+    // Try starting via native messaging if available
+    badge.className = "server-badge starting";
+    badgeText.textContent = "Starting Backend...";
+
+    const res = await sendNativeHostMessage({ action: "start" });
+    if (res) {
+        // Poll for up to 6 seconds
+        for (let i = 0; i < 6; i++) {
+            await new Promise((r) => setTimeout(r, 1000));
+            if (await ping()) {
+                badge.className = "server-badge online";
+                badgeText.textContent = "Backend Online";
+                if (notice) notice.style.display = "none";
+                refreshDownloadedFiles();
+                return true;
+            }
+        }
+    }
+
+    badge.className = "server-badge offline";
+    badgeText.textContent = "Backend Offline (Click to Retry)";
+    if (notice) notice.style.display = "block";
+    badge.onclick = () => {
+        badge.className = "server-badge checking";
+        badgeText.textContent = "Checking...";
+        checkAndAutoStartBackend();
+    };
+    return false;
+}
+
+
+// --------------------------------------------------
+// ACTIVE YOUTUBE TAB DETECTION & DIRECT DOWNLOAD
+// --------------------------------------------------
+
+function extractCleanYouTubeUrl(rawUrl) {
+    if (!rawUrl) return null;
+    try {
+        const parsed = new URL(rawUrl);
+        const host = parsed.hostname.toLowerCase();
+        
+        if (host.includes("youtube.com")) {
+            if (parsed.pathname === "/watch" && parsed.searchParams.has("v")) {
+                return `https://www.youtube.com/watch?v=${parsed.searchParams.get("v")}`;
+            }
+            if (parsed.pathname.startsWith("/shorts/")) {
+                const parts = parsed.pathname.split("/").filter(Boolean);
+                if (parts.length >= 2) {
+                    return `https://www.youtube.com/shorts/${parts[1]}`;
+                }
+            }
+            if (parsed.pathname.startsWith("/live/")) {
+                const parts = parsed.pathname.split("/").filter(Boolean);
+                if (parts.length >= 2) {
+                    return `https://www.youtube.com/watch?v=${parts[1]}`;
+                }
+            }
+        } else if (host === "youtu.be") {
+            const videoId = parsed.pathname.replace(/^\//, "");
+            if (videoId) {
+                return `https://www.youtube.com/watch?v=${videoId}`;
+            }
+        }
+    } catch {
+        // Fallback to raw URL
+    }
+    return rawUrl;
+}
+
+async function checkActiveYouTubeTab() {
+    if (!ext || !ext.tabs?.query) {
+        return;
+    }
+
+    try {
+        let tabs = [];
+        const queryPromise = ext.tabs.query({ active: true, currentWindow: true });
+        if (queryPromise && typeof queryPromise.then === "function") {
+            tabs = await queryPromise;
+        } else {
+            tabs = await new Promise((resolve) => ext.tabs.query({ active: true, currentWindow: true }, resolve));
+        }
+        const tab = tabs && tabs[0];
+        if (!tab || !tab.url) return;
+
+        const isYouTube = tab.url.includes("youtube.com/watch") || 
+                          tab.url.includes("youtube.com/shorts/") ||
+                          tab.url.includes("youtu.be/") ||
+                          tab.url.includes("youtube.com/live/");
+        if (!isYouTube) return;
+
+        const card = document.getElementById("activeVideoCard");
+        const titleEl = document.getElementById("activeVideoTitle");
+        const btn = document.getElementById("downloadActiveButton");
+        const statusEl = document.getElementById("activeVideoStatus");
+        const watermarkCheckbox = document.getElementById("activeWatermarkCheckbox");
+        const watermarkLabel = document.getElementById("activeWatermarkLabel");
+
+        if (!card || !titleEl || !btn || !statusEl) return;
+
+        function updateWatermarkCheckboxUI() {
+            if (!watermarkCheckbox) return;
+            const currentWm = getWatermark();
+            if (currentWm) {
+                watermarkCheckbox.title = watermarkCheckbox.checked 
+                    ? `Watermark "${currentWm}" will be added to this video` 
+                    : `Check to add watermark "${currentWm}" to this video`;
+                if (watermarkLabel) {
+                    const displayWm = currentWm.length > 14 ? currentWm.slice(0, 12) + "…" : currentWm;
+                    watermarkLabel.textContent = `Watermark (${displayWm})`;
+                }
+            } else {
+                watermarkCheckbox.title = "Add watermark (set watermark handle in the field below)";
+                if (watermarkLabel) {
+                    watermarkLabel.textContent = "Add watermark";
+                }
+            }
+        }
+
+        if (watermarkCheckbox) {
+            storage.get(["savedActiveWatermarkCheckbox"]).then((data) => {
+                if (data.savedActiveWatermarkCheckbox !== undefined) {
+                    watermarkCheckbox.checked = Boolean(data.savedActiveWatermarkCheckbox);
+                } else {
+                    watermarkCheckbox.checked = Boolean(getWatermark());
+                }
+                updateWatermarkCheckboxUI();
+            });
+
+            watermarkCheckbox.onchange = () => {
+                storage.set({ savedActiveWatermarkCheckbox: watermarkCheckbox.checked });
+                updateWatermarkCheckboxUI();
+            };
+        }
+
+        if (watermarkInput) {
+            watermarkInput.addEventListener("input", updateWatermarkCheckboxUI);
+        }
+
+        const cleanTitle = (tab.title || "YouTube Video")
+            .replace(/ - YouTube$/, "")
+            .replace(/\(\d+\)\s*/, "")
+            .trim();
+
+        const targetUrl = extractCleanYouTubeUrl(tab.url) || tab.url;
+
+        titleEl.textContent = cleanTitle;
+        card.style.display = "block";
+
+        const activeProgress = new ProgressTracker({
+            container: "activeProgressContainer",
+            fill: "activeProgressFill",
+            percent: "activeProgressPercent",
+            stage: "activeProgressStage",
+            timer: "activeProgressTimer",
+            detail: "activeProgressDetail"
+        });
+
+        btn.onclick = async () => {
+            btn.disabled = true;
+            btn.textContent = "CHECKING BACKEND...";
+            statusEl.textContent = "Connecting to ShortBot backend...";
+            statusEl.className = "active-video-status pending";
+
+            const taskId = "active_dl_" + Date.now();
+            activeProgress.start("Connecting to backend...", 5);
+
+            try {
+                // Step 1: Verify backend is reachable, auto-start if needed
+                let isAlive = false;
+                try {
+                    const pingCtrl = new AbortController();
+                    const pingTimer = setTimeout(() => pingCtrl.abort(), 1800);
+                    const pingRes = await fetch(`${BACKEND_URL}/health`, { signal: pingCtrl.signal });
+                    clearTimeout(pingTimer);
+                    isAlive = pingRes.ok;
+                } catch {
+                    isAlive = false;
+                }
+
+                if (!isAlive) {
+                    btn.textContent = "STARTING SERVER...";
+                    statusEl.textContent = "Backend offline. Launching ShortBot backend...";
+                    activeProgress.update(10, "Starting backend...", "Launching backend daemon...");
+                    isAlive = await checkAndAutoStartBackend();
+                }
+
+                if (!isAlive) {
+                    btn.disabled = false;
+                    btn.textContent = "⬇ DOWNLOAD THIS VIDEO";
+                    statusEl.innerHTML = 'ShortBot backend is offline. Run <code style="background:rgba(255,255,255,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;">python backend.py</code> in terminal, or click the status badge above to retry.';
+                    statusEl.className = "active-video-status error";
+                    activeProgress.fail("ShortBot backend is offline");
+                    return;
+                }
+
+                // Step 2: Request download with real-time progress tracking
+                btn.textContent = "DOWNLOADING...";
+                statusEl.textContent = "Downloading & processing video with yt-dlp...";
+                statusEl.className = "active-video-status pending";
+
+                const applyWm = watermarkCheckbox ? watermarkCheckbox.checked : false;
+                const watermark = applyWm ? getWatermark() : "";
+
+                const detailMsg = watermark 
+                    ? `Downloading with watermark '${watermark}'...` 
+                    : "Connecting to YouTube stream...";
+                activeProgress.update(15, "Starting download...", detailMsg);
+                activeProgress.pollTask(taskId);
+
+                let res;
+                try {
+                    res = await fetch(`${BACKEND_URL}/download`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            url: targetUrl,
+                            watermark: watermark,
+                            server_only: false,
+                            task_id: taskId
+                        })
+                    });
+                } catch (fetchErr) {
+                    throw new Error("Could not connect to backend server at 127.0.0.1:5000. Is backend.py running?");
+                }
+
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.details || err.error || `Download failed with HTTP ${res.status}`);
+                }
+
+                activeProgress.update(98, "Saving file...", "Receiving media stream...");
+                const blob = await res.blob();
+                const blobUrl = URL.createObjectURL(blob);
+                const safeName = (cleanTitle.replace(/[^a-zA-Z0-9_\-\s]/g, "").trim().slice(0, 40) || "youtube_video") + ".mp4";
+
+                // Step 3: Trigger download via ext.downloads or anchor click
+                if (ext && ext.downloads?.download) {
+                    try {
+                        ext.downloads.download({
+                            url: blobUrl,
+                            filename: safeName,
+                            saveAs: false
+                        }, (downloadId) => {
+                            if (ext.runtime?.lastError) {
+                                console.warn("downloads error, falling back to <a>:", ext.runtime.lastError.message);
+                                triggerAnchorDownload(blobUrl, safeName);
+                            }
+                        });
+                    } catch {
+                        triggerAnchorDownload(blobUrl, safeName);
+                    }
+                } else {
+                    triggerAnchorDownload(blobUrl, safeName);
+                }
+
+                const finishMsg = watermark
+                    ? "Downloaded & watermarked successfully! ✓"
+                    : "Downloaded successfully! ✓";
+                activeProgress.complete(finishMsg);
+                activeProgress.hide(6000);
+
+                btn.disabled = false;
+                btn.textContent = watermark ? "SAVED (WATERMARKED) ✓" : "DOWNLOADED ✓";
+                statusEl.textContent = `Saved: ${safeName}` + (watermark ? ` (watermark: "${watermark}")` : "");
+                statusEl.className = "active-video-status success";
+                if (typeof refreshDownloadedFiles === "function") {
+                    refreshDownloadedFiles();
+                }
+            } catch (err) {
+                console.error("Active download error:", err);
+                activeProgress.fail(err.message);
+                btn.disabled = false;
+                btn.textContent = "⬇ DOWNLOAD THIS VIDEO";
+                statusEl.textContent = "Download failed: " + err.message;
+                statusEl.className = "active-video-status error";
+            }
+        };
+
+        function triggerAnchorDownload(url, filename) {
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+        }
+    } catch (e) {
+        console.log("Could not check active tab:", e);
+    }
+}
+
 
 
 // --------------------------------------------------
@@ -117,8 +755,15 @@ async function refreshDownloadedFiles() {
 
     try {
 
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 4000);
+
         const response =
-            await fetch("/downloads");
+            await fetch(`${BACKEND_URL}/downloads`, {
+                signal: controller.signal
+            });
+
+        clearTimeout(timeoutId);
 
         const data =
             await response.json();
@@ -147,7 +792,7 @@ async function refreshDownloadedFiles() {
 
     catch (error) {
 
-        console.error(
+        console.warn(
             "Could not refresh downloaded files:",
             error
         );
@@ -202,7 +847,8 @@ function updateDownloadedButtons() {
 
 async function downloadShort(
     short,
-    button
+    button,
+    serverOnly = false
 ) {
 
     button.disabled =
@@ -211,6 +857,23 @@ async function downloadShort(
     button.textContent =
         "DOWNLOADING...";
 
+    let cardTracker = null;
+    const progressEl = document.getElementById(`short-progress-${short.index}`);
+    const taskId = `dl_short_${short.index}_${Date.now()}`;
+
+    if (progressEl) {
+        cardTracker = new ProgressTracker({
+            container: `short-progress-${short.index}`,
+            fill: `short-progress-fill-${short.index}`,
+            percent: `short-progress-percent-${short.index}`,
+            stage: `short-progress-stage-${short.index}`,
+            timer: `short-progress-timer-${short.index}`,
+            detail: `short-progress-detail-${short.index}`
+        });
+        cardTracker.start("Connecting to YouTube...", 5);
+        cardTracker.pollTask(taskId);
+    }
+
     try {
 
         const watermark =
@@ -218,7 +881,7 @@ async function downloadShort(
 
         const response =
             await fetch(
-                "/download",
+                `${BACKEND_URL}/download`,
                 {
 
                     method: "POST",
@@ -234,7 +897,13 @@ async function downloadShort(
                             short.url,
 
                         watermark:
-                            watermark
+                            watermark,
+
+                        server_only:
+                            serverOnly,
+
+                        task_id:
+                            taskId
 
                     })
 
@@ -253,6 +922,7 @@ async function downloadShort(
 
                 errorMessage =
                     errorData.error ||
+                    errorData.details ||
                     errorMessage;
 
             }
@@ -267,64 +937,70 @@ async function downloadShort(
 
         }
 
-        const disposition =
-            response.headers.get(
-                "Content-Disposition"
-            );
+        let filename = null;
 
-        let filename =
-            null;
-
-        if (disposition) {
-
-            const match =
-                disposition.match(
-                    /filename="?([^"]+)"?/i
+        if (serverOnly) {
+            const data = await response.json();
+            filename = data.filename;
+        } else {
+            const disposition =
+                response.headers.get(
+                    "Content-Disposition"
                 );
 
-            if (match) {
+            if (disposition) {
 
-                filename =
-                    match[1];
+                const match =
+                    disposition.match(
+                        /filename="?([^"]+)"?/i
+                    );
+
+                if (match) {
+
+                    filename =
+                        match[1];
+
+                }
 
             }
 
-        }
+            const blob =
+                await response.blob();
 
-        const blob =
-            await response.blob();
+            const blobUrl =
+                window.URL.createObjectURL(
+                    blob
+                );
 
-        const blobUrl =
-            window.URL.createObjectURL(
-                blob
+            const link =
+                document.createElement("a");
+
+            link.href =
+                blobUrl;
+
+            link.download =
+                filename ||
+                "short.mp4";
+
+            document.body.appendChild(
+                link
             );
 
-        const link =
-            document.createElement("a");
+            link.click();
 
-        link.href =
-            blobUrl;
+            link.remove();
 
-        link.download =
-            filename ||
-            "short.mp4";
-
-        document.body.appendChild(
-            link
-        );
-
-        link.click();
-
-        link.remove();
-
-        window.URL.revokeObjectURL(
-            blobUrl
-        );
+            window.URL.revokeObjectURL(
+                blobUrl
+            );
+        }
 
         if (filename) {
 
             short.downloadedFilename =
                 filename;
+
+            downloadedFiles[filename] = true;
 
         }
 
@@ -336,6 +1012,11 @@ async function downloadShort(
 
         button.dataset.downloaded =
             "true";
+
+        if (cardTracker) {
+            cardTracker.complete("Downloaded ✓");
+            cardTracker.hide(5000);
+        }
 
         return {
             success: true,
@@ -353,6 +1034,10 @@ async function downloadShort(
 
         button.textContent =
             "DOWNLOAD FAILED";
+
+        if (cardTracker) {
+            cardTracker.fail(error.message);
+        }
 
         throw error;
 
@@ -404,6 +1089,15 @@ async function downloadSelected() {
     const watermark =
         getWatermark();
 
+    const batchTracker = new ProgressTracker({
+        container: "selectionProgressContainer",
+        fill: "selectionProgressFill",
+        percent: "selectionProgressPercent",
+        stage: "selectionProgressStage",
+        timer: "selectionProgressTimer",
+        detail: "selectionProgressDetail"
+    });
+
     try {
 
         const shortsToDownload =
@@ -431,9 +1125,14 @@ async function downloadSelected() {
             status.textContent =
                 "All selected Shorts are already downloaded. ✓";
 
+            batchTracker.complete("All selected Shorts already downloaded! ✓");
+            batchTracker.hide(4000);
+
             return;
 
         }
+
+        batchTracker.start(`Downloading ${shortsToDownload.length} selected Shorts...`, 5);
 
         /*
          * Run up to 3 downloads at once.
@@ -480,10 +1179,15 @@ async function downloadSelected() {
                         `download-button-${short.index}`
                     );
 
-                completed++;
+                const currentPct = Math.round((completed / selectedShorts.length) * 100);
+                batchTracker.update(
+                    Math.max(5, currentPct),
+                    `Downloading Shorts (${completed + 1}/${selectedShorts.length})...`,
+                    short.title.slice(0, 35) + "..."
+                );
 
                 status.textContent =
-                    `Downloading Shorts... ${completed}/${selectedShorts.length}`;
+                    `Downloading Shorts... ${completed + 1}/${selectedShorts.length}`;
 
                 try {
 
@@ -511,6 +1215,13 @@ async function downloadSelected() {
                 }
 
                 completed++;
+
+                const finishPct = Math.round((completed / selectedShorts.length) * 100);
+                batchTracker.update(
+                    finishPct,
+                    `Downloading Shorts... (${completed}/${selectedShorts.length})`,
+                    `Finished: ${short.title.slice(0, 30)}`
+                );
 
                 status.textContent =
                     `Downloading Shorts... ${Math.min(
@@ -561,6 +1272,9 @@ async function downloadSelected() {
                     1
                 )}s. ${failed} failed.`;
 
+            batchTracker.fail(`Done in ${elapsedSeconds.toFixed(1)}s (${failed} failed)`);
+            batchTracker.hide(7000);
+
         }
         else {
 
@@ -573,6 +1287,9 @@ async function downloadSelected() {
                         1
                     )}s. ✓`;
 
+            batchTracker.complete(`All ${selectedShorts.length} Shorts downloaded in ${elapsedSeconds.toFixed(1)}s! ✓`);
+            batchTracker.hide(6000);
+
         }
 
     }
@@ -583,6 +1300,8 @@ async function downloadSelected() {
             "Selected download error:",
             error
         );
+
+        batchTracker.fail(error.message);
 
         status.textContent =
             "Selected download failed: " +
@@ -646,13 +1365,22 @@ async function compileSelected() {
     compileButton.textContent =
         "PREPARING...";
 
+    const compileTracker = new ProgressTracker({
+        container: "selectionProgressContainer",
+        fill: "selectionProgressFill",
+        percent: "selectionProgressPercent",
+        stage: "selectionProgressStage",
+        timer: "selectionProgressTimer",
+        detail: "selectionProgressDetail"
+    });
+
     try {
 
         /*
          * First make sure every selected Short
          * is downloaded.
          *
-         * This now uses parallel downloads.
+         * This uses parallel downloads.
          */
 
         const shortsToDownload =
@@ -673,6 +1401,7 @@ async function compileSelected() {
             shortsToDownload.length > 0
         ) {
 
+            compileTracker.start("Preparing missing video clips...", 5);
             status.textContent =
                 `Downloading ${shortsToDownload.length} selected Shorts...`;
 
@@ -711,33 +1440,69 @@ async function compileSelected() {
                             `download-button-${short.index}`
                         );
 
+                    const prepPct = Math.round(5 + (completed / shortsToDownload.length) * 30);
+                    compileTracker.update(
+                        prepPct,
+                        `Preparing clips (${completed + 1}/${shortsToDownload.length})...`,
+                        short.title.slice(0, 35) + "..."
+                    );
+
                     status.textContent =
-                        `Downloading selected Shorts...`;
+                        `Downloading selected Shorts (${completed + 1}/${shortsToDownload.length})...`;
 
-                    try {
-
-                        if (individualButton) {
-
-                            await downloadShort(
-                                short,
-                                individualButton
-                            );
-
-                        }
-
+                    if (individualButton) {
+                        individualButton.disabled = true;
+                        individualButton.textContent = "DOWNLOADING...";
                     }
 
-                    catch (error) {
+                    try {
+                        const res = await fetch(`${BACKEND_URL}/download`, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json"
+                            },
+                            body: JSON.stringify({
+                                url: short.url,
+                                watermark: "",
+                                server_only: true
+                            })
+                        });
 
+                        if (!res.ok) {
+                            const errData = await res.json().catch(() => ({}));
+                            throw new Error(errData.error || `HTTP ${res.status}`);
+                        }
+
+                        const data = await res.json();
+                        if (data.success && data.filename) {
+                            short.downloadedFilename = data.filename;
+                            downloadedFiles[data.filename] = true;
+                            if (individualButton) {
+                                individualButton.textContent = "DOWNLOADED ✓";
+                                individualButton.dataset.downloaded = "true";
+                                individualButton.disabled = false;
+                            }
+                        }
+                    } catch (error) {
                         console.error(
                             "Download failed during compilation:",
                             short.title,
                             error
                         );
-
+                        if (individualButton) {
+                            individualButton.textContent = "DOWNLOAD";
+                            individualButton.disabled = false;
+                        }
                     }
 
                     completed++;
+
+                    const donePrepPct = Math.round(5 + (completed / shortsToDownload.length) * 30);
+                    compileTracker.update(
+                        donePrepPct,
+                        `Prepared ${completed}/${shortsToDownload.length} clips...`,
+                        `Finished: ${short.title.slice(0, 30)}`
+                    );
 
                     status.textContent =
                         `Downloaded ${completed}/${shortsToDownload.length} new Shorts...`;
@@ -815,18 +1580,19 @@ async function compileSelected() {
 
         }
 
+        const compileTaskId = "compile_" + Date.now();
         if (watermark) {
-
+            compileTracker.start(`Compiling ${filesToCompile.length} Shorts with watermark...`, 40);
             status.textContent =
                 `Compiling ${filesToCompile.length} Shorts with watermark...`;
-
         }
         else {
-
+            compileTracker.start(`Compiling ${filesToCompile.length} Shorts without watermark...`, 40);
             status.textContent =
                 `Compiling ${filesToCompile.length} Shorts without watermark...`;
-
         }
+
+        compileTracker.pollTask(compileTaskId);
 
         compileButton.textContent =
             "COMPILING...";
@@ -836,7 +1602,7 @@ async function compileSelected() {
 
         const response =
             await fetch(
-                "/compile",
+                `${BACKEND_URL}/compile`,
                 {
 
                     method: "POST",
@@ -852,7 +1618,10 @@ async function compileSelected() {
                             filesToCompile,
 
                         watermark:
-                            watermark
+                            watermark,
+
+                        task_id:
+                            compileTaskId
 
                     })
 
@@ -871,6 +1640,7 @@ async function compileSelected() {
 
                 errorMessage =
                     errorData.error ||
+                    errorData.details ||
                     errorMessage;
 
             }
@@ -885,6 +1655,8 @@ async function compileSelected() {
 
         }
 
+        compileTracker.update(98, "Saving compiled video...", "Downloading compilation file...");
+
         const blob =
             await response.blob();
 
@@ -893,32 +1665,57 @@ async function compileSelected() {
                 blob
             );
 
-        const link =
-            document.createElement("a");
+        if (ext && ext.downloads?.download) {
+            try {
+                ext.downloads.download({
+                    url: blobUrl,
+                    filename: "shortbot_compilation.mp4",
+                    saveAs: true
+                }, function () {
+                    if (ext.runtime?.lastError) {
+                        const link = document.createElement("a");
+                        link.href = blobUrl;
+                        link.download = "shortbot_compilation.mp4";
+                        document.body.appendChild(link);
+                        link.click();
+                        link.remove();
+                    }
+                });
+            } catch {
+                const link = document.createElement("a");
+                link.href = blobUrl;
+                link.download = "shortbot_compilation.mp4";
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+            }
+        } else {
+            const link =
+                document.createElement("a");
 
-        link.href =
-            blobUrl;
+            link.href =
+                blobUrl;
 
-        link.download =
-            "shortbot_compilation.mp4";
+            link.download =
+                "shortbot_compilation.mp4";
 
-        document.body.appendChild(
-            link
-        );
+            document.body.appendChild(
+                link
+            );
 
-        link.click();
+            link.click();
 
-        link.remove();
-
-        window.URL.revokeObjectURL(
-            blobUrl
-        );
+            link.remove();
+        }
 
         const compileElapsedSeconds =
             (
                 performance.now() -
                 compileStartTime
             ) / 1000;
+
+        compileTracker.complete(`Compilation complete in ${compileElapsedSeconds.toFixed(1)}s! ✓`);
+        compileTracker.hide(7000);
 
         status.textContent =
             watermark
@@ -940,6 +1737,8 @@ async function compileSelected() {
             "Compilation error:",
             error
         );
+
+        compileTracker.fail(error.message);
 
         status.textContent =
             "Compilation failed: " +
@@ -1052,6 +1851,45 @@ function createSelectionControls() {
     controls.appendChild(
         compileButton
     );
+
+    const clearButton =
+        document.createElement(
+            "button"
+        );
+
+    clearButton.id =
+        "clearResultsButton";
+
+    clearButton.textContent =
+        "CLEAR RESULTS";
+
+    clearButton.addEventListener(
+        "click",
+        clearResults
+    );
+
+    controls.appendChild(
+        clearButton
+    );
+
+    const selProgress = document.createElement("div");
+    selProgress.id = "selectionProgressContainer";
+    selProgress.className = "progress-card selection-progress";
+    selProgress.style.display = "none";
+    selProgress.innerHTML = `
+        <div class="progress-header">
+            <span id="selectionProgressStage" class="progress-stage">Processing...</span>
+            <span class="progress-meta">
+                <span id="selectionProgressPercent" class="progress-percent">0%</span>
+                <span id="selectionProgressTimer" class="progress-timer">⏱ 00:00</span>
+            </span>
+        </div>
+        <div class="progress-track">
+            <div id="selectionProgressFill" class="progress-fill" style="width: 0%;"></div>
+        </div>
+        <div id="selectionProgressDetail" class="progress-detail">Starting batch...</div>
+    `;
+    controls.appendChild(selProgress);
 
     results.appendChild(
         controls
@@ -1253,6 +2091,25 @@ function renderShorts(
                 buttons
             );
 
+            const inlineProgress = document.createElement("div");
+            inlineProgress.id = `short-progress-${short.index}`;
+            inlineProgress.className = "progress-card short-inline-progress";
+            inlineProgress.style.display = "none";
+            inlineProgress.innerHTML = `
+                <div class="progress-header">
+                    <span id="short-progress-stage-${short.index}" class="progress-stage">Downloading...</span>
+                    <span class="progress-meta">
+                        <span id="short-progress-percent-${short.index}" class="progress-percent">0%</span>
+                        <span id="short-progress-timer-${short.index}" class="progress-timer">⏱ 00:00</span>
+                    </span>
+                </div>
+                <div class="progress-track">
+                    <div id="short-progress-fill-${short.index}" class="progress-fill" style="width: 0%;"></div>
+                </div>
+                <div id="short-progress-detail-${short.index}" class="progress-detail">Connecting to YouTube...</div>
+            `;
+            card.appendChild(inlineProgress);
+
             results.appendChild(
                 card
             );
@@ -1265,6 +2122,8 @@ function renderShorts(
     refreshDownloadedFiles();
 
     updateSelectionControls();
+
+    saveAppState();
 
 }
 
@@ -1346,7 +2205,7 @@ searchButton.addEventListener(
 
             const response =
                 await fetch(
-                    "/search",
+                    `${BACKEND_URL}/search`,
                     {
 
                         method: "POST",
@@ -1405,6 +2264,8 @@ searchButton.addEventListener(
                 foundShorts
             );
 
+            saveAppState();
+
         }
 
         catch (error) {
@@ -1432,3 +2293,54 @@ searchButton.addEventListener(
 
     }
 );
+
+
+// --------------------------------------------------
+// INITIALIZATION
+// --------------------------------------------------
+
+window.addEventListener("unhandledrejection", function (event) {
+    console.warn("Unhandled promise rejection in ShortBot:", event.reason);
+});
+
+async function initApp() {
+    try {
+        if (openTabButton) {
+            // Hide openTabButton if already running in a dedicated browser tab
+            const isExtensionPopup = window.location.protocol.startsWith("chrome-extension:") || window.location.protocol.startsWith("moz-extension:");
+            if (window.innerWidth > 750 || !isExtensionPopup) {
+                openTabButton.style.display = "none";
+            } else {
+                openTabButton.addEventListener("click", function () {
+                    const extUrl = (ext && ext.runtime?.getURL) ? ext.runtime.getURL("index.html") : window.location.href;
+                    if (ext && ext.tabs?.create) {
+                        try {
+                            const res = ext.tabs.create({ url: extUrl });
+                            if (res && typeof res.catch === "function") res.catch(() => {});
+                        } catch {
+                            window.open(window.location.href, "_blank");
+                        }
+                    } else {
+                        window.open(window.location.href, "_blank");
+                    }
+                });
+            }
+        }
+
+        if (requestInput) requestInput.addEventListener("input", saveAppState);
+        if (quantityInput) quantityInput.addEventListener("input", saveAppState);
+        if (watermarkInput) watermarkInput.addEventListener("input", saveAppState);
+
+        await restoreAppState();
+        checkAndAutoStartBackend();
+        checkActiveYouTubeTab();
+    } catch (err) {
+        console.error("ShortBot initApp error:", err);
+    }
+}
+
+if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initApp);
+} else {
+    initApp();
+}

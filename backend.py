@@ -1,42 +1,217 @@
-from flask import Flask, request, jsonify, send_from_directory, send_file
-from agent import find_shorts
+import sys
 import os
-import subprocess
-import uuid
-import glob
-import shutil
-
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(BASE_DIR, "ui")
 DOWNLOAD_DIR = os.path.join(BASE_DIR, "downloads")
+LOG_FILE = os.path.join(BASE_DIR, "backend.log")
+
+# Ensure UTF-8 output handling on Windows or log to file if running headless/pythonw
+try:
+    if sys.stdout is None or not hasattr(sys.stdout, "write"):
+        sys.stdout = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+    elif sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+try:
+    if sys.stderr is None or not hasattr(sys.stderr, "write"):
+        sys.stderr = open(LOG_FILE, "a", encoding="utf-8", buffering=1)
+    elif sys.platform == "win32" and hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
+
+from flask import Flask, request, jsonify, send_from_directory, send_file
+from agent import find_shorts
+import subprocess
+import uuid
+import glob
+import shutil
+import threading
+import time
+import re
+import yt_dlp
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 app = Flask(__name__)
 
 
-FFMPEG_PATH = shutil.which("ffmpeg")
+# ============================================================
+# TASK PROGRESS TRACKER
+# ============================================================
 
+TASK_PROGRESS = {}
+TASK_PROGRESS_LOCK = threading.Lock()
+
+def update_task_progress(task_id, percent, stage, speed="", eta="", detail="", status="running"):
+    if not task_id:
+        return
+    with TASK_PROGRESS_LOCK:
+        now = time.time()
+        # Clean tasks older than 30 minutes
+        to_del = [tid for tid, data in TASK_PROGRESS.items() if now - data.get("updated_at", now) > 1800]
+        for tid in to_del:
+            del TASK_PROGRESS[tid]
+            
+        TASK_PROGRESS[task_id] = {
+            "percent": float(percent),
+            "stage": str(stage),
+            "speed": str(speed),
+            "eta": str(eta),
+            "detail": str(detail),
+            "status": str(status),
+            "updated_at": now
+        }
+
+@app.route("/progress/<task_id>", methods=["GET"])
+def get_task_progress_route(task_id):
+    with TASK_PROGRESS_LOCK:
+        prog = TASK_PROGRESS.get(task_id)
+    if not prog:
+        return jsonify({"success": False, "error": "Task not found"}), 404
+    return jsonify({"success": True, "progress": prog})
+
+def get_video_duration(file_path):
+    try:
+        probe = FFPROBE_PATH or shutil.which("ffprobe") or "ffprobe"
+        cmd = [
+            probe,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            file_path
+        ]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        val = float(res.stdout.strip())
+        return max(0.1, val)
+    except Exception:
+        return 0.0
+
+
+# ============================================================
+# FIREFOX / EXTENSION CORS
+# ============================================================
+
+@app.after_request
+def add_cors_headers(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    return response
+
+
+
+def find_ffmpeg_binary(name):
+    # 1. Check local bin/
+    p = os.path.join(BASE_DIR, "bin", f"{name}.exe")
+    if os.path.isfile(p):
+        return p
+    # 2. Check local directory
+    p = os.path.join(BASE_DIR, f"{name}.exe")
+    if os.path.isfile(p):
+        return p
+    # 3. Check system PATH
+    return shutil.which(name)
+
+FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
 
 if FFMPEG_PATH:
     print()
-    print("FFmpeg found:")
-    print(FFMPEG_PATH)
+    print("FFmpeg found:", FFMPEG_PATH)
+    print("FFprobe found:", FFPROBE_PATH)
     print()
-else:
+
+_FAST_ENCODER_OPTS = None
+
+def get_fast_h264_encoder():
+    """Returns the fastest available H.264 video encoder options.
+    Prefers NVIDIA NVENC hardware acceleration with fallback to ultrafast libx264."""
+    global _FAST_ENCODER_OPTS
+    if _FAST_ENCODER_OPTS is not None:
+        return _FAST_ENCODER_OPTS
+
+    ffmpeg = FFMPEG_PATH or "ffmpeg"
+    try:
+        test_cmd = [
+            ffmpeg,
+            "-y",
+            "-f", "lavfi",
+            "-i", "color=c=black:s=256x256:d=0.1",
+            "-c:v", "h264_nvenc",
+            "-preset", "p1",
+            "-f", "null",
+            "-"
+        ]
+        res = subprocess.run(
+            test_cmd,
+            capture_output=True,
+            timeout=5
+        )
+        if res.returncode == 0:
+            print()
+            print("Hardware video acceleration enabled: NVIDIA NVENC (h264_nvenc)")
+            print()
+            _FAST_ENCODER_OPTS = ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "24"]
+            return _FAST_ENCODER_OPTS
+    except Exception as e:
+        print("NVENC probe failed, falling back to CPU encoder:", e)
+
     print()
-    print("WARNING: FFmpeg was not found in PATH.")
-    print("Run: ffmpeg -version")
+    print("Using CPU video encoder: libx264 (ultrafast)")
     print()
+    _FAST_ENCODER_OPTS = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "22", "-threads", "0"]
+    return _FAST_ENCODER_OPTS
+
+
+
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
+@app.route("/health", methods=["GET", "OPTIONS"])
+def health():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    from ai_engine import get_gemini_api_key
+    gemini_key = get_gemini_api_key()
+    return jsonify({
+        "success": True,
+        "status": "online",
+        "ffmpeg": bool(FFMPEG_PATH),
+        "ai_mode": "gemini_cloud" if gemini_key else "local_nlp",
+        "has_gemini_key": bool(gemini_key)
+    })
+
+
+@app.route("/config/ai", methods=["GET", "POST", "OPTIONS"])
+def config_ai():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    from ai_engine import get_gemini_api_key, load_config, save_config
+    if request.method == "POST":
+        data = request.get_json(silent=True) or {}
+        key = data.get("gemini_api_key", "").strip()
+        cfg = load_config()
+        cfg["gemini_api_key"] = key
+        save_config(cfg)
+        return jsonify({"success": True, "has_gemini_key": bool(key), "ai_mode": "gemini_cloud" if key else "local_nlp"})
+    key = get_gemini_api_key()
+    return jsonify({"success": True, "has_gemini_key": bool(key), "ai_mode": "gemini_cloud" if key else "local_nlp"})
+
 
 
 # ============================================================
 # SEARCH
 # ============================================================
 
-@app.route("/search", methods=["POST"])
+@app.route("/search", methods=["POST", "OPTIONS"])
 def search():
+    if request.method == "OPTIONS":
+        return ("", 204)
 
     data = request.get_json(silent=True)
 
@@ -47,7 +222,7 @@ def search():
         }), 400
 
     user_request = str(
-        data.get("request", "")
+        data.get("request", data.get("query", ""))
     ).strip()
 
     quantity = data.get("quantity")
@@ -73,7 +248,6 @@ def search():
         }), 400
 
     try:
-
         results = find_shorts(
             user_request,
             quantity
@@ -85,7 +259,6 @@ def search():
         })
 
     except Exception as e:
-
         print()
         print("=" * 60)
         print("SEARCH ERROR")
@@ -106,7 +279,10 @@ def search():
 def apply_watermark(
     input_file,
     output_file,
-    watermark
+    watermark,
+    task_id=None,
+    base_percent=50.0,
+    max_percent=95.0
 ):
 
     if not watermark:
@@ -158,61 +334,74 @@ def apply_watermark(
             "y=h-th-30"
         )
 
+        encoder_args = get_fast_h264_encoder()
         command = [
-
             FFMPEG_PATH,
-
             "-y",
-
             "-i",
             input_file,
-
             "-vf",
             filter_complex,
-
-            "-c:v",
-            "libx264",
-
-            "-preset",
-            "veryfast",
-
-            "-crf",
-            "23",
-
+            *encoder_args,
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
-            "aac",
-
-            "-b:a",
-            "128k",
-
+            "copy",
             "-movflags",
             "+faststart",
-
+            "-progress",
+            "pipe:1",
+            "-nostats",
             output_file
         ]
 
         print()
-        print("Applying watermark:")
-        print(watermark)
+        print("Applying watermark:", watermark)
         print()
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=1200
+        total_duration = get_video_duration(input_file)
+
+        update_task_progress(
+            task_id,
+            base_percent,
+            f"Applying watermark '{watermark}'...",
+            detail="Encoding frames with FFmpeg..."
         )
 
-        print(result.stdout)
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
 
-        if result.stderr:
-            print(result.stderr)
+        recent_lines = []
+        for line in iter(process.stdout.readline, ''):
+            recent_lines.append(line)
+            if len(recent_lines) > 50:
+                recent_lines.pop(0)
+            if "out_time_us=" in line:
+                match = re.search(r"out_time_us=(\d+)", line)
+                if match and total_duration > 0:
+                    current_sec = int(match.group(1)) / 1_000_000.0
+                    fraction = min(1.0, current_sec / total_duration)
+                    prog = base_percent + fraction * (max_percent - base_percent)
+                    update_task_progress(
+                        task_id,
+                        round(prog, 1),
+                        f"Applying watermark '{watermark}' ({prog:.0f}%)...",
+                        detail=f"{current_sec:.1f}s / {total_duration:.1f}s processed"
+                    )
 
-        if result.returncode != 0:
+        process.wait(timeout=600)
 
+        if process.returncode != 0:
+            stderr_out = "".join(recent_lines)
             raise RuntimeError(
                 "FFmpeg could not apply the watermark.\n"
-                + result.stderr[-3000:]
+                + stderr_out[-3000:]
             )
 
         if not os.path.exists(output_file):
@@ -257,6 +446,13 @@ def download():
         data.get("watermark", "")
     ).strip()
 
+    # Firefox extension can ask the backend to keep the downloaded
+    # MP4 in the server workspace without streaming it through the
+    # popup. This makes user-selected Firefox download locations
+    # reliable. Existing callers keep the original behavior.
+    server_only = bool(data.get("server_only", False))
+    task_id = str(data.get("task_id", "")).strip() or None
+
     if not video_url:
 
         return jsonify({
@@ -270,6 +466,13 @@ def download():
             "success": False,
             "error": "Watermark is too long."
         }), 400
+
+    update_task_progress(
+        task_id,
+        5.0,
+        "Starting download...",
+        detail="Connecting to YouTube..."
+    )
 
     print()
     print("=" * 60)
@@ -286,6 +489,7 @@ def download():
 
     if not FFMPEG_PATH:
 
+        update_task_progress(task_id, 0.0, "Failed", detail="FFmpeg not found", status="error")
         return jsonify({
             "success": False,
             "error": "FFmpeg was not found."
@@ -298,52 +502,121 @@ def download():
         f"short_{file_id}.%(ext)s"
     )
 
-    command = [
+    node_path = shutil.which("node")
+    cookies_file = os.path.join(BASE_DIR, "cookies.txt")
+    cookies_param = cookies_file if os.path.isfile(cookies_file) else None
 
-        "python",
-        "-m",
-        "yt_dlp",
-
-        "-f",
-        "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]",
-
-        "--merge-output-format",
-        "mp4",
-
-        "--ffmpeg-location",
-        FFMPEG_PATH,
-
-        "--no-playlist",
-
-        "-o",
-        output_template,
-
-        video_url
+    # Client strategies to bypass YouTube 429 and bot verification challenges
+    client_strategies = [
+        "android,ios,web",
+        "android,ios",
+        "web,ios,android"
     ]
 
-    print("Running yt-dlp...")
-    print()
+    success = False
+    last_error_details = ""
+    scale = 0.70 if watermark else 0.90
+
+    def ydl_progress_hook(d):
+        status = d.get("status")
+        if status == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
+            downloaded = d.get("downloaded_bytes") or 0
+            speed = d.get("speed")
+            eta = d.get("eta")
+
+            speed_str = ""
+            if speed:
+                if speed > 1024 * 1024:
+                    speed_str = f"{speed / (1024 * 1024):.1f} MiB/s"
+                else:
+                    speed_str = f"{speed / 1024:.1f} KiB/s"
+
+            eta_str = ""
+            if eta is not None:
+                mins, secs = divmod(int(eta), 60)
+                eta_str = f"{mins:02d}:{secs:02d}"
+
+            raw_pct = (downloaded / total * 100.0) if total > 0 else 0.0
+            calc_pct = min(scale * 100.0, 5.0 + raw_pct * scale * 0.95)
+
+            update_task_progress(
+                task_id,
+                round(calc_pct, 1),
+                f"Downloading video ({raw_pct:.0f}%)...",
+                speed=speed_str,
+                eta=eta_str,
+                detail=f"{speed_str} • ETA: {eta_str}" if speed_str else "Downloading stream..."
+            )
+        elif status == "finished":
+            update_task_progress(
+                task_id,
+                88.0 if not watermark else 68.0,
+                "Merging video & audio streams...",
+                detail="Combining formats with FFmpeg..."
+            )
 
     try:
+        for strat_idx, client_strat in enumerate(client_strategies):
+            if strat_idx > 0:
+                print(f"Retrying download with strategy {strat_idx + 1} ({client_strat})...")
+                update_task_progress(
+                    task_id,
+                    10.0,
+                    "Retrying download...",
+                    detail=f"Bypassing YouTube verification with {client_strat}..."
+                )
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=600
-        )
+            print(f"Running yt-dlp in-process (strategy: {client_strat})...")
 
-        print(result.stdout)
+            ydl_opts = {
+                "outtmpl": output_template,
+                "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bestvideo*+bestaudio/best",
+                "merge_output_format": "mp4",
+                "ffmpeg_location": FFMPEG_PATH,
+                "noplaylist": True,
+                "progress_hooks": [ydl_progress_hook],
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": client_strat.split(",")
+                    }
+                },
+                "quiet": True,
+                "no_warnings": True,
+            }
+            if cookies_param:
+                ydl_opts["cookiefile"] = cookies_param
+            if node_path:
+                ydl_opts["js_runtimes"] = {"node": {"path": node_path}}
 
-        if result.stderr:
-            print(result.stderr)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    ydl.download([video_url])
+                success = True
+                break
+            except Exception as e:
+                last_error_details = str(e)
+                print(f"yt-dlp error: {e}")
+                is_bot_error = any(
+                    phrase in last_error_details
+                    for phrase in [
+                        "Sign in to confirm you’re not a bot",
+                        "Sign in to confirm you're not a bot",
+                        "HTTP Error 429",
+                        "429: Too Many Requests",
+                        "Missing required Visitor Data",
+                        "GVS PO Token"
+                    ]
+                )
+                if not is_bot_error:
+                    break
 
-        if result.returncode != 0:
-
+        if not success:
+            update_task_progress(task_id, 0.0, "Download failed", detail=last_error_details[:200], status="error")
             return jsonify({
                 "success": False,
                 "error": "Download failed.",
-                "details": result.stderr[-2000:]
+                "details": last_error_details
             }), 500
 
         original_file = os.path.join(
@@ -370,6 +643,7 @@ def download():
             for file in possible_files:
                 print(file)
 
+            update_task_progress(task_id, 0.0, "File not found", detail="Final MP4 was not produced", status="error")
             return jsonify({
                 "success": False,
                 "error": "Download completed, but the final MP4 was not found.",
@@ -398,7 +672,10 @@ def download():
             apply_watermark(
                 original_file,
                 watermarked_file,
-                watermark
+                watermark,
+                task_id=task_id,
+                base_percent=70.0,
+                max_percent=98.0
             )
 
             # Replace the original downloaded file with
@@ -414,6 +691,14 @@ def download():
 
             final_file = original_file
 
+        update_task_progress(
+            task_id,
+            100.0,
+            "Download complete!",
+            detail=f"short_{file_id}.mp4",
+            status="completed"
+        )
+
         print()
         print("=" * 60)
         print("DOWNLOAD SUCCESSFUL")
@@ -423,6 +708,12 @@ def download():
         print("Final MP4:")
         print(final_file)
         print()
+
+        if server_only:
+            return jsonify({
+                "success": True,
+                "filename": f"short_{file_id}.mp4"
+            })
 
         return send_file(
             final_file,
@@ -451,6 +742,61 @@ def download():
             "success": False,
             "error": str(e)
         }), 500
+
+
+# ============================================================
+# SERVE A SERVER-WORKSPACE MP4 TO FIREFOX
+# ============================================================
+
+@app.route("/file/<path:filename>", methods=["GET"])
+def serve_shortbot_file(filename):
+
+    safe_name = os.path.basename(filename)
+
+    if safe_name != filename:
+        return jsonify({
+            "success": False,
+            "error": "Invalid filename."
+        }), 400
+
+    if not safe_name.lower().endswith(".mp4"):
+        return jsonify({
+            "success": False,
+            "error": "Only MP4 files are allowed."
+        }), 400
+
+    if not (
+        safe_name.lower().startswith("short_")
+        or safe_name.lower().startswith("compilation_")
+    ):
+        return jsonify({
+            "success": False,
+            "error": "Invalid ShortBot file."
+        }), 400
+
+    full_path = os.path.join(
+        DOWNLOAD_DIR,
+        safe_name
+    )
+
+    if not os.path.isfile(full_path):
+        return jsonify({
+            "success": False,
+            "error": "File not found."
+        }), 404
+
+    download_name = (
+        "shortbot_compilation.mp4"
+        if safe_name.lower().startswith("compilation_")
+        else safe_name
+    )
+
+    return send_file(
+        full_path,
+        as_attachment=True,
+        download_name=download_name,
+        mimetype="video/mp4"
+    )
 
 
 # ============================================================
@@ -534,6 +880,11 @@ def compile_shorts():
         )
     ).strip()
 
+    # Firefox extension uses JSON metadata, then asks Firefox itself
+    # to download the finished MP4. This avoids popup/blob download
+    # failures and gives Firefox full control of the save location.
+    return_json = bool(data.get("return_json", False))
+
     if not isinstance(
         files,
         list
@@ -592,12 +943,23 @@ def compile_shorts():
                 full_path
             )
 
+    task_id = str(data.get("task_id", "")).strip() or None
+
     if len(valid_files) < 2:
 
         return jsonify({
             "success": False,
             "error": "Download at least 2 Shorts before compiling."
         }), 400
+
+    total_duration = sum(get_video_duration(f) for f in valid_files)
+
+    update_task_progress(
+        task_id,
+        10.0,
+        f"Preparing {len(valid_files)} video clips...",
+        detail="Creating concatenation manifest..."
+    )
 
     print("Files to compile:")
 
@@ -685,6 +1047,28 @@ def compile_shorts():
                 output_file
             ]
 
+            update_task_progress(
+                task_id,
+                40.0,
+                "Merging video clips...",
+                detail="Direct stream copy..."
+            )
+
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=300
+            )
+
+            if result.returncode != 0:
+                update_task_progress(task_id, 0.0, "Compilation failed", detail=result.stderr[:200], status="error")
+                return jsonify({
+                    "success": False,
+                    "error": "FFmpeg could not compile the Shorts.",
+                    "details": result.stderr[-3000:]
+                }), 500
+
         # ----------------------------------------------------
         # WATERMARK ENABLED
         # ----------------------------------------------------
@@ -730,71 +1114,83 @@ def compile_shorts():
                 "y=h-th-30"
             )
 
+            encoder_args = get_fast_h264_encoder()
             command = [
-
                 FFMPEG_PATH,
-
                 "-y",
-
                 "-f",
                 "concat",
-
                 "-safe",
                 "0",
-
                 "-i",
                 concat_file,
-
                 "-vf",
                 filter_complex,
-
-                "-c:v",
-                "libx264",
-
-                "-preset",
-                "veryfast",
-
-                "-crf",
-                "23",
-
+                *encoder_args,
+                "-pix_fmt",
+                "yuv420p",
                 "-c:a",
-                "aac",
-
-                "-b:a",
-                "128k",
-
+                "copy",
                 "-movflags",
                 "+faststart",
-
+                "-progress",
+                "pipe:1",
+                "-nostats",
                 output_file
             ]
 
-        # ----------------------------------------------------
-        # RUN FFMPEG
-        # ----------------------------------------------------
+            update_task_progress(
+                task_id,
+                20.0,
+                f"Applying watermark '{watermark}'...",
+                detail="Encoding compilation with FFmpeg..."
+            )
 
-        print("Running FFmpeg...")
-        print()
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
 
-        result = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=1200
+            recent_lines = []
+            for line in iter(process.stdout.readline, ''):
+                recent_lines.append(line)
+                if len(recent_lines) > 50:
+                    recent_lines.pop(0)
+                if "out_time_us=" in line:
+                    match = re.search(r"out_time_us=(\d+)", line)
+                    if match and total_duration > 0:
+                        current_sec = int(match.group(1)) / 1_000_000.0
+                        fraction = min(1.0, current_sec / total_duration)
+                        prog = 20.0 + fraction * 78.0
+                        update_task_progress(
+                            task_id,
+                            round(prog, 1),
+                            f"Compiling with watermark ({prog:.0f}%)...",
+                            detail=f"{current_sec:.1f}s / {total_duration:.1f}s processed"
+                        )
+
+            process.wait(timeout=1200)
+
+            if process.returncode != 0:
+                stderr_out = "".join(recent_lines)
+                update_task_progress(task_id, 0.0, "Compilation failed", detail=stderr_out[:200], status="error")
+                return jsonify({
+                    "success": False,
+                    "error": "FFmpeg could not compile the Shorts.",
+                    "details": stderr_out[-3000:]
+                }), 500
+
+        update_task_progress(
+            task_id,
+            100.0,
+            "Compilation complete!",
+            detail=f"compilation_{compile_id}.mp4",
+            status="completed"
         )
-
-        print(result.stdout)
-
-        if result.stderr:
-            print(result.stderr)
-
-        if result.returncode != 0:
-
-            return jsonify({
-                "success": False,
-                "error": "FFmpeg could not compile the Shorts.",
-                "details": result.stderr[-3000:]
-            }), 500
 
         if not os.path.exists(
             output_file
@@ -819,6 +1215,12 @@ def compile_shorts():
         print("Final compilation:")
         print(output_file)
         print()
+
+        if return_json:
+            return jsonify({
+                "success": True,
+                "filename": f"compilation_{compile_id}.mp4"
+            })
 
         return send_file(
             output_file,
@@ -927,5 +1329,7 @@ if __name__ == "__main__":
     app.run(
         host="127.0.0.1",
         port=5000,
-        debug=True
+        debug=False,
+        use_reloader=False,
+        threaded=True
     )

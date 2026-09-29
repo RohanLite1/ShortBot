@@ -1,6 +1,18 @@
+# Python virtual environments & bytecode
 downloads/
 __pycache__/
 *.pyc
-.env
+*.pyo
 .venv/
 venv/
+.env
+
+# Logs & temp files
+*.log
+backend.log
+cookies.txt
+
+# PyInstaller build artifacts (distributables are built via build_companion_engine.py)
+build/
+dist/
+*.spec

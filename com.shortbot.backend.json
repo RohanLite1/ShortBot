@@ -1,0 +1,10 @@
+{
+  "name": "com.shortbot.backend",
+  "description": "ShortBot Native Messaging Host",
+  "path": "C:\\Users\\bigma\\Desktop\\flolder\\code\\webcmdhack\\native_host.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "extension://gfoaiibpnmjdgkkfpbkdgodljmepondo/",
+    "chrome-extension://gfoaiibpnmjdgkkfpbkdgodljmepondo/"
+  ]
+}
