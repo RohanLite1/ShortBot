@@ -87,6 +87,18 @@ def get_task_progress_route(task_id):
         return jsonify({"success": False, "error": "Task not found"}), 404
     return jsonify({"success": True, "progress": prog})
 
+def get_no_window_kwargs():
+    """Returns subprocess kwargs that completely prevent console/CMD windows on Windows."""
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = si
+    return kwargs
+
+
 def get_video_duration(file_path):
     dur, _ = probe_media_info(file_path)
     return dur
@@ -103,7 +115,7 @@ def probe_media_info(file_path):
             "-of", "json",
             file_path
         ]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=10, **get_no_window_kwargs())
         import json
         info = json.loads(res.stdout) if res.stdout else {}
         dur = float(info.get("format", {}).get("duration", 0.0))
@@ -195,7 +207,8 @@ def get_fast_h264_encoder():
         res = subprocess.run(
             test_cmd,
             capture_output=True,
-            timeout=5
+            timeout=5,
+            **get_no_window_kwargs()
         )
         if res.returncode == 0:
             print()
@@ -420,7 +433,8 @@ def apply_watermark(
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            **get_no_window_kwargs()
         )
 
         recent_lines = []
@@ -959,10 +973,11 @@ if ($res -eq [System.Windows.Forms.DialogResult]::OK) {{
 """
         encoded = base64.b64encode(ps_script.strip().encode("utf-16le")).decode("ascii")
         proc = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            ["powershell", "-WindowStyle", "Hidden", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             capture_output=True,
             text=True,
-            timeout=180
+            timeout=180,
+            **get_no_window_kwargs()
         )
 
         stdout = proc.stdout.strip()
@@ -1015,7 +1030,7 @@ def open_folder():
 
     try:
         if sys.platform == "win32":
-            subprocess.Popen(["explorer.exe", f"/select,{os.path.normpath(path)}"])
+            subprocess.Popen(["explorer.exe", f"/select,{os.path.normpath(path)}"], **get_no_window_kwargs())
         elif sys.platform == "darwin":
             subprocess.Popen(["open", "-R", path])
         else:
@@ -1263,7 +1278,8 @@ def compile_shorts():
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            **get_no_window_kwargs()
         )
 
         recent_lines = []

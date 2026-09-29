@@ -21,6 +21,17 @@ if sys.platform == "win32":
             sys.stderr.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+def get_no_window_kwargs():
+    """Returns subprocess kwargs that prevent console/CMD windows from appearing on Windows."""
+    kwargs = {}
+    if sys.platform == "win32":
+        kwargs["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = subprocess.SW_HIDE
+        kwargs["startupinfo"] = si
+    return kwargs
+
 
 
 def safe_print(*args, **kwargs):
@@ -210,7 +221,8 @@ def search_youtube_fast(search_query, max_results=20):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=25
+            timeout=25,
+            **get_no_window_kwargs()
         )
         if process.returncode != 0:
             return []
@@ -325,7 +337,8 @@ return results;
             capture_output=True,
             text=True,
             encoding="utf-8",
-            errors="replace"
+            errors="replace",
+            **get_no_window_kwargs()
         )
         if process.returncode != 0:
             print("Webcmd error:", process.stderr)

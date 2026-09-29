@@ -36,7 +36,11 @@ def start_backend():
             ps_cmd = f"Start-Process -FilePath '{standalone_exe}' -WorkingDirectory '{BASE_DIR}' -WindowStyle Hidden"
             subprocess.Popen(
                 ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", ps_cmd],
-                cwd=BASE_DIR
+                cwd=BASE_DIR,
+                creationflags=0x08000000,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
             )
         except Exception:
             try:
@@ -55,7 +59,14 @@ def start_backend():
         vbs_script = os.path.join(BASE_DIR, "start_backend_silent.vbs")
         if os.path.isfile(vbs_script):
             try:
-                subprocess.Popen(["wscript.exe", vbs_script], cwd=BASE_DIR)
+                subprocess.Popen(
+                    ["wscript.exe", vbs_script],
+                    cwd=BASE_DIR,
+                    creationflags=0x08000000,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
             except Exception:
                 pass
         else:

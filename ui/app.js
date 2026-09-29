@@ -283,7 +283,8 @@ async function saveAppState() {
             savedWatermark: watermarkInput.value,
             savedActiveWatermarkCheckbox: watermarkCheckbox ? watermarkCheckbox.checked : false,
             savedShorts: shorts,
-            savedStatusText: status.textContent
+            savedStatusText: status.textContent,
+            savedCompilation: currentCompilation
         });
     } catch (e) {
         console.warn("Could not save state:", e);
@@ -322,6 +323,10 @@ async function restoreAppState() {
                 status.textContent = `Found ${data.savedShorts.length} relevant Shorts.`;
             }
             renderShorts(data.savedShorts);
+        }
+
+        if (data.savedCompilation && data.savedCompilation.downloadUrl) {
+            showCompilationSaveMenu(data.savedCompilation);
         }
     } catch (e) {
         console.warn("Could not restore state:", e);
@@ -794,6 +799,8 @@ function showCompilationSaveMenu({ downloadUrl, serverFilename, finalFilename, b
         card.style.display = "block";
         card.scrollIntoView({ behavior: "smooth", block: "center" });
     }
+
+    saveAppState();
 }
 
 function hideCompilationMenu() {
@@ -802,6 +809,7 @@ function hideCompilationMenu() {
     if (modal) modal.style.display = "none";
     const card = document.getElementById("compilationSaveCard");
     if (card) card.style.display = "none";
+    storage.remove(["savedCompilation"]);
 }
 
 function setCompilationButtonsDisabled(disabled) {
@@ -871,35 +879,48 @@ async function executeSaveAs() {
     setCompilationButtonsDisabled(true);
 
     try {
-        // 1. If backend companion is connected, try native OS Save As dialog via PowerShell
-        if (currentCompilation.serverFilename) {
+        // 1. WebExtension Downloads API (Firefox & Chromium Extension contexts)
+        // When running as an extension, browser's native download manager prompts
+        // for file location directly with ZERO console or PowerShell windows!
+        // The download continues safely even if the extension popup loses focus.
+        if (ext && ext.downloads && typeof ext.downloads.download === "function") {
             try {
-                const res = await fetch(`${BACKEND_URL}/save-dialog`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        filename: currentCompilation.serverFilename,
-                        suggested_name: currentCompilation.finalFilename
-                    })
-                });
-
-                if (res.ok) {
-                    const data = await res.json();
-                    if (data.success && data.saved_path) {
-                        updateCompilationStatus("success", `✅ Saved to: ${data.saved_path}`, data.saved_path);
+                if (typeof browser !== "undefined" && browser.downloads?.download) {
+                    const dlId = await browser.downloads.download({
+                        url: currentCompilation.downloadUrl,
+                        filename: currentCompilation.finalFilename,
+                        saveAs: true
+                    });
+                    if (dlId) {
+                        updateCompilationStatus("success", `✅ Download started: ${currentCompilation.finalFilename}`);
                         return;
-                    } else if (data.cancelled) {
-                        updateCompilationStatus("info", "Save cancelled. Click 'SAVE AS...' to pick another location.");
+                    }
+                } else if (typeof chrome !== "undefined" && chrome.downloads?.download) {
+                    const success = await new Promise((resolve) => {
+                        chrome.downloads.download({
+                            url: currentCompilation.downloadUrl,
+                            filename: currentCompilation.finalFilename,
+                            saveAs: true
+                        }, (id) => {
+                            if (chrome.runtime?.lastError) {
+                                console.warn("[ShortBot] chrome.downloads error:", chrome.runtime.lastError.message);
+                                resolve(false);
+                            } else {
+                                resolve(Boolean(id));
+                            }
+                        });
+                    });
+                    if (success) {
+                        updateCompilationStatus("success", `✅ Download started: ${currentCompilation.finalFilename}`);
                         return;
                     }
                 }
-            } catch (backendErr) {
-                console.warn("[ShortBot] Backend save-dialog fallback to browser:", backendErr);
+            } catch (extErr) {
+                console.warn("[ShortBot] WebExtension download fallback:", extErr);
             }
         }
 
-        // 2. Direct user gesture fallback: window.showSaveFilePicker
-        // Because the user just clicked this button, showSaveFilePicker has a valid user gesture!
+        // 2. Modern Browser File System Access API (Chrome / Edge in browser tab)
         if (typeof window.showSaveFilePicker === "function") {
             try {
                 const handle = await window.showSaveFilePicker({
@@ -925,39 +946,34 @@ async function executeSaveAs() {
                     updateCompilationStatus("info", "Save cancelled.");
                     return;
                 }
-                console.warn("[ShortBot] showSaveFilePicker error:", pickerErr);
+                console.warn("[ShortBot] showSaveFilePicker fallback:", pickerErr);
             }
         }
 
-        // 3. WebExtension Downloads API with saveAs: true
-        if (ext && ext.downloads && typeof ext.downloads.download === "function") {
+        // 3. Companion Engine Native Windows Dialog (powershell -WindowStyle Hidden without console window)
+        if (currentCompilation.serverFilename) {
             try {
-                if (typeof browser !== "undefined" && browser.downloads?.download) {
-                    const dlId = await browser.downloads.download({
-                        url: currentCompilation.downloadUrl,
-                        filename: currentCompilation.finalFilename,
-                        saveAs: true
-                    });
-                    if (dlId) {
-                        updateCompilationStatus("success", `✅ Download started: ${currentCompilation.finalFilename}`);
+                const res = await fetch(`${BACKEND_URL}/save-dialog`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        filename: currentCompilation.serverFilename,
+                        suggested_name: currentCompilation.finalFilename
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.success && data.saved_path) {
+                        updateCompilationStatus("success", `✅ Saved to: ${data.saved_path}`, data.saved_path);
+                        return;
+                    } else if (data.cancelled) {
+                        updateCompilationStatus("info", "Save cancelled. Click 'SAVE AS...' to pick another location.");
                         return;
                     }
-                } else if (typeof chrome !== "undefined" && chrome.downloads?.download) {
-                    chrome.downloads.download({
-                        url: currentCompilation.downloadUrl,
-                        filename: currentCompilation.finalFilename,
-                        saveAs: true
-                    }, (id) => {
-                        if (id) {
-                            updateCompilationStatus("success", `✅ Download started: ${currentCompilation.finalFilename}`);
-                        } else {
-                            triggerAnchorDownload(currentCompilation.downloadUrl, currentCompilation.finalFilename);
-                        }
-                    });
-                    return;
                 }
-            } catch (extErr) {
-                console.warn("[ShortBot] WebExtension download error:", extErr);
+            } catch (backendErr) {
+                console.warn("[ShortBot] Backend save-dialog fallback to browser:", backendErr);
             }
         }
 
