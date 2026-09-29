@@ -336,6 +336,7 @@ function clearResults() {
     if (oldControls) {
         oldControls.remove();
     }
+    hideCompilationMenu();
     status.textContent = 'Enter a request and click "Find Shorts".';
     storage.remove(["savedShorts", "savedStatusText"]);
 }
@@ -764,6 +765,262 @@ async function saveVideoFile(urlOrBlob, filename = "video.mp4", forcePrompt = tr
     // 3. Fallback: Trigger anchor download
     triggerAnchorDownload(resolvedUrl, filename);
     return true;
+}
+
+// --------------------------------------------------
+// COMPILATION SAVE AS MENU & DIALOG MANAGEMENT
+// --------------------------------------------------
+
+let currentCompilation = null;
+
+function showCompilationSaveMenu({ downloadUrl, serverFilename, finalFilename, blob }) {
+    currentCompilation = { downloadUrl, serverFilename, finalFilename, blob };
+
+    const cardFn = document.getElementById("compilationCardFilename");
+    if (cardFn) cardFn.textContent = finalFilename;
+    const modalFn = document.getElementById("modalCompilationFilename");
+    if (modalFn) modalFn.textContent = finalFilename;
+
+    updateCompilationStatus("", "");
+    setCompilationButtonsDisabled(false);
+
+    const modal = document.getElementById("compilationSaveModal");
+    if (modal) {
+        modal.style.display = "flex";
+    }
+
+    const card = document.getElementById("compilationSaveCard");
+    if (card) {
+        card.style.display = "block";
+        card.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+}
+
+function hideCompilationMenu() {
+    currentCompilation = null;
+    const modal = document.getElementById("compilationSaveModal");
+    if (modal) modal.style.display = "none";
+    const card = document.getElementById("compilationSaveCard");
+    if (card) card.style.display = "none";
+}
+
+function setCompilationButtonsDisabled(disabled) {
+    const ids = [
+        "modalSaveAsButton",
+        "cardSaveAsButton",
+        "modalSaveDownloadsButton",
+        "cardSaveDownloadsButton"
+    ];
+    ids.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (btn) btn.disabled = disabled;
+    });
+}
+
+function updateCompilationStatus(type, message, savedPath = null) {
+    const boxes = [
+        document.getElementById("compilationModalStatus"),
+        document.getElementById("compilationCardStatus")
+    ];
+
+    boxes.forEach((box) => {
+        if (!box) return;
+        if (!message) {
+            box.style.display = "none";
+            box.innerHTML = "";
+            box.className = "compilation-status-box";
+            return;
+        }
+
+        box.style.display = "flex";
+        box.className = `compilation-status-box ${type}`;
+        
+        box.innerHTML = "";
+        const span = document.createElement("span");
+        span.textContent = message;
+        box.appendChild(span);
+
+        if (savedPath) {
+            const openBtn = document.createElement("button");
+            openBtn.className = "btn-open-explorer";
+            openBtn.type = "button";
+            openBtn.textContent = "📂 Open in File Explorer";
+            openBtn.addEventListener("click", () => openFileLocation(savedPath));
+            box.appendChild(openBtn);
+        }
+    });
+}
+
+async function openFileLocation(filePath) {
+    if (!filePath) return;
+    try {
+        await fetch(`${BACKEND_URL}/open-folder`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ path: filePath })
+        });
+    } catch (e) {
+        console.warn("Could not open folder:", e);
+    }
+}
+
+async function executeSaveAs() {
+    if (!currentCompilation) return;
+
+    updateCompilationStatus("opening", "⏳ Opening Save As dialog... Choose your destination folder.");
+    setCompilationButtonsDisabled(true);
+
+    try {
+        // 1. If backend companion is connected, try native OS Save As dialog via PowerShell
+        if (currentCompilation.serverFilename) {
+            try {
+                const res = await fetch(`${BACKEND_URL}/save-dialog`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        filename: currentCompilation.serverFilename,
+                        suggested_name: currentCompilation.finalFilename
+                    })
+                });
+
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.success && data.saved_path) {
+                        updateCompilationStatus("success", `✅ Saved to: ${data.saved_path}`, data.saved_path);
+                        return;
+                    } else if (data.cancelled) {
+                        updateCompilationStatus("info", "Save cancelled. Click 'SAVE AS...' to pick another location.");
+                        return;
+                    }
+                }
+            } catch (backendErr) {
+                console.warn("[ShortBot] Backend save-dialog fallback to browser:", backendErr);
+            }
+        }
+
+        // 2. Direct user gesture fallback: window.showSaveFilePicker
+        // Because the user just clicked this button, showSaveFilePicker has a valid user gesture!
+        if (typeof window.showSaveFilePicker === "function") {
+            try {
+                const handle = await window.showSaveFilePicker({
+                    suggestedName: currentCompilation.finalFilename,
+                    types: [{
+                        description: "MP4 Video (*.mp4)",
+                        accept: { "video/mp4": [".mp4"] }
+                    }]
+                });
+                const writable = await handle.createWritable();
+                const resp = await fetch(currentCompilation.downloadUrl);
+                if (resp.body && typeof resp.body.pipeTo === "function") {
+                    await resp.body.pipeTo(writable);
+                } else {
+                    const b = await resp.blob();
+                    await writable.write(b);
+                }
+                await writable.close();
+                updateCompilationStatus("success", `✅ Saved compilation: ${currentCompilation.finalFilename}`);
+                return;
+            } catch (pickerErr) {
+                if (pickerErr.name === "AbortError") {
+                    updateCompilationStatus("info", "Save cancelled.");
+                    return;
+                }
+                console.warn("[ShortBot] showSaveFilePicker error:", pickerErr);
+            }
+        }
+
+        // 3. WebExtension Downloads API with saveAs: true
+        if (ext && ext.downloads && typeof ext.downloads.download === "function") {
+            try {
+                if (typeof browser !== "undefined" && browser.downloads?.download) {
+                    const dlId = await browser.downloads.download({
+                        url: currentCompilation.downloadUrl,
+                        filename: currentCompilation.finalFilename,
+                        saveAs: true
+                    });
+                    if (dlId) {
+                        updateCompilationStatus("success", `✅ Download started: ${currentCompilation.finalFilename}`);
+                        return;
+                    }
+                } else if (typeof chrome !== "undefined" && chrome.downloads?.download) {
+                    chrome.downloads.download({
+                        url: currentCompilation.downloadUrl,
+                        filename: currentCompilation.finalFilename,
+                        saveAs: true
+                    }, (id) => {
+                        if (id) {
+                            updateCompilationStatus("success", `✅ Download started: ${currentCompilation.finalFilename}`);
+                        } else {
+                            triggerAnchorDownload(currentCompilation.downloadUrl, currentCompilation.finalFilename);
+                        }
+                    });
+                    return;
+                }
+            } catch (extErr) {
+                console.warn("[ShortBot] WebExtension download error:", extErr);
+            }
+        }
+
+        // 4. Fallback anchor download
+        triggerAnchorDownload(currentCompilation.downloadUrl, currentCompilation.finalFilename);
+        updateCompilationStatus("success", "✅ Download started to default Downloads folder.");
+    } catch (err) {
+        updateCompilationStatus("error", `Could not save: ${err.message}`);
+    } finally {
+        setCompilationButtonsDisabled(false);
+    }
+}
+
+async function executeDirectDownload() {
+    if (!currentCompilation) return;
+    updateCompilationStatus("opening", "⬇ Downloading to default Downloads folder...");
+    setCompilationButtonsDisabled(true);
+    try {
+        await saveVideoFile(currentCompilation.downloadUrl, currentCompilation.finalFilename, false);
+        updateCompilationStatus("success", `✅ Downloaded ${currentCompilation.finalFilename} to your Downloads folder!`);
+    } catch (err) {
+        updateCompilationStatus("error", `Download error: ${err.message}`);
+    } finally {
+        setCompilationButtonsDisabled(false);
+    }
+}
+
+function setupCompilationModalListeners() {
+    const modal = document.getElementById("compilationSaveModal");
+    const closeBtn = document.getElementById("closeCompilationModal");
+    if (closeBtn && modal) {
+        closeBtn.addEventListener("click", () => {
+            modal.style.display = "none";
+        });
+    }
+
+    const cardCloseBtn = document.getElementById("cardCloseSaveCard");
+    const card = document.getElementById("compilationSaveCard");
+    if (cardCloseBtn && card) {
+        cardCloseBtn.addEventListener("click", () => {
+            card.style.display = "none";
+        });
+    }
+
+    if (modal) {
+        modal.addEventListener("click", (e) => {
+            if (e.target === modal) {
+                modal.style.display = "none";
+            }
+        });
+    }
+
+    const modalSaveAs = document.getElementById("modalSaveAsButton");
+    if (modalSaveAs) modalSaveAs.addEventListener("click", executeSaveAs);
+
+    const cardSaveAs = document.getElementById("cardSaveAsButton");
+    if (cardSaveAs) cardSaveAs.addEventListener("click", executeSaveAs);
+
+    const modalSaveDl = document.getElementById("modalSaveDownloadsButton");
+    if (modalSaveDl) modalSaveDl.addEventListener("click", executeDirectDownload);
+
+    const cardSaveDl = document.getElementById("cardSaveDownloadsButton");
+    if (cardSaveDl) cardSaveDl.addEventListener("click", executeDirectDownload);
 }
 
 // --------------------------------------------------
@@ -1849,10 +2106,12 @@ async function compileSelected() {
             throw new Error(errorMessage);
         }
 
-        compileTracker.update(98, "Saving compiled video...", "Downloading compilation file...");
+        compileTracker.update(98, "Compilation finished!", "Preparing download menu...");
 
         const contentType = response.headers.get("Content-Type") || "";
         let downloadUrl = null;
+        let serverFilename = null;
+        let blobData = null;
         const finalFilename = "shortbot_compilation.mp4";
 
         if (contentType.includes("application/json")) {
@@ -1860,7 +2119,7 @@ async function compileSelected() {
             if (!resultData.success) {
                 throw new Error(resultData.error || resultData.details || "Compilation failed on backend.");
             }
-            const serverFilename = resultData.filename || `compilation_${compileTaskId}.mp4`;
+            serverFilename = resultData.filename || `compilation_${compileTaskId}.mp4`;
             const base = BACKEND_URL || "http://127.0.0.1:5000";
             downloadUrl = `${base}/file/${serverFilename}`;
 
@@ -1872,11 +2131,9 @@ async function compileSelected() {
             }
         } else {
             const blob = await response.blob();
+            blobData = blob;
             downloadUrl = window.URL.createObjectURL(blob);
         }
-
-        // Trigger native download with "Save As" location prompt
-        const saved = await saveVideoFile(downloadUrl, finalFilename, true);
 
         // Reconcile and refresh state for shorts whose individual source clips were deleted
         await refreshDownloadedFiles();
@@ -1910,6 +2167,21 @@ async function compileSelected() {
         setTimeout(() => {
             compileButton.textContent = "COMPILE SELECTED";
         }, 5000);
+
+        // Display the visible "Save As" location menu and card
+        const saveAsCheckbox = document.getElementById("selectionSaveAsCheckbox");
+        const shouldPromptSaveAs = !saveAsCheckbox || saveAsCheckbox.checked;
+
+        if (shouldPromptSaveAs) {
+            showCompilationSaveMenu({
+                downloadUrl: downloadUrl,
+                serverFilename: serverFilename,
+                finalFilename: finalFilename,
+                blob: blobData
+            });
+        } else {
+            await saveVideoFile(downloadUrl, finalFilename, false);
+        }
     }
 
     catch (error) {
@@ -2032,6 +2304,21 @@ function createSelectionControls() {
     controls.appendChild(
         compileButton
     );
+
+    const saveAsRow = document.createElement("div");
+    saveAsRow.className = "selection-toggle-row";
+    saveAsRow.innerHTML = `
+        <label class="selection-saveas-label" for="selectionSaveAsCheckbox" title="Ask where to save compiled video when finished">
+            <input type="checkbox" id="selectionSaveAsCheckbox" checked>
+            <span class="selection-checkbox-box">
+                <svg class="selection-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                </svg>
+            </span>
+            <span>Ask where to save compilation (Save As menu)</span>
+        </label>
+    `;
+    controls.appendChild(saveAsRow);
 
     const clearButton =
         document.createElement(
@@ -2525,6 +2812,7 @@ async function initApp() {
         checkAndAutoStartBackend();
         checkActiveYouTubeTab();
         setupDirectDownloadSection();
+        setupCompilationModalListeners();
         await restoreAppState();
     } catch (err) {
         console.error("ShortBot initApp error:", err);

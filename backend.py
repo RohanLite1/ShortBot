@@ -911,6 +911,121 @@ def list_downloads():
 
 
 # ============================================================
+# NATIVE WINDOWS SAVE AS DIALOG & FILE EXPLORER
+# ============================================================
+
+@app.route("/save-dialog", methods=["POST", "OPTIONS"])
+def save_file_dialog():
+    if request.method == "OPTIONS":
+        return "", 204
+
+    data = request.get_json(silent=True) or {}
+    source_filename = data.get("filename")
+    suggested_name = data.get("suggested_name", "shortbot_compilation.mp4")
+
+    if not source_filename:
+        return jsonify({"success": False, "error": "No filename provided."}), 400
+
+    source_path = os.path.join(DOWNLOAD_DIR, os.path.basename(source_filename))
+    if not os.path.isfile(source_path):
+        return jsonify({"success": False, "error": f"File {source_filename} not found on server."}), 404
+
+    if sys.platform != "win32":
+        return jsonify({
+            "success": False,
+            "error": "Native OS dialog only available on Windows.",
+            "fallback_browser": True
+        })
+
+    try:
+        import base64
+
+        clean_suggested = re.sub(r'[\r\n\'"]', "", suggested_name) or "shortbot_compilation.mp4"
+        ps_script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+$form = New-Object System.Windows.Forms.Form
+$form.TopMost = $true
+$dlg = New-Object System.Windows.Forms.SaveFileDialog
+$dlg.Title = "ShortBot - Save Compilation As"
+$dlg.Filter = "MP4 Video (*.mp4)|*.mp4|All Files (*.*)|*.*"
+$dlg.FileName = "{clean_suggested}"
+$dlg.RestoreDirectory = $true
+$res = $dlg.ShowDialog($form)
+if ($res -eq [System.Windows.Forms.DialogResult]::OK) {{
+    Write-Output "SAVED:$($dlg.FileName)"
+}} else {{
+    Write-Output "CANCELLED"
+}}
+"""
+        encoded = base64.b64encode(ps_script.strip().encode("utf-16le")).decode("ascii")
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True,
+            text=True,
+            timeout=180
+        )
+
+        stdout = proc.stdout.strip()
+        lines = [line.strip() for line in stdout.splitlines() if line.strip()]
+        saved_line = next((l for l in lines if l.startswith("SAVED:")), None)
+        cancelled = any("CANCELLED" in l for l in lines)
+
+        if saved_line:
+            target_path = saved_line[len("SAVED:"):].strip()
+            target_dir = os.path.dirname(target_path)
+            if target_dir:
+                os.makedirs(target_dir, exist_ok=True)
+            shutil.copy2(source_path, target_path)
+            print(f"[ShortBot] Saved compilation to: {target_path}")
+            return jsonify({
+                "success": True,
+                "saved_path": target_path,
+                "filename": os.path.basename(target_path)
+            })
+        elif cancelled:
+            return jsonify({
+                "success": False,
+                "cancelled": True,
+                "message": "Save dialog cancelled by user."
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Dialog did not return a valid file path.",
+                "details": proc.stderr.strip() or stdout,
+                "fallback_browser": True
+            })
+
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": "Save dialog timed out."}), 504
+    except Exception as e:
+        print(f"[ShortBot] save_file_dialog error: {e}")
+        return jsonify({"success": False, "error": str(e), "fallback_browser": True}), 500
+
+
+@app.route("/open-folder", methods=["POST", "OPTIONS"])
+def open_folder():
+    if request.method == "OPTIONS":
+        return "", 204
+
+    data = request.get_json(silent=True) or {}
+    path = data.get("path")
+    if not path or not os.path.exists(path):
+        return jsonify({"success": False, "error": "Path does not exist."}), 404
+
+    try:
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer.exe", f"/select,{os.path.normpath(path)}"])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", "-R", path])
+        else:
+            subprocess.Popen(["xdg-open", os.path.dirname(path)])
+        return jsonify({"success": True})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
+# ============================================================
 # COMPILE SELECTED SHORTS
 # ============================================================
 
