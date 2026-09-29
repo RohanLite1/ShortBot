@@ -618,25 +618,8 @@ async function checkActiveYouTubeTab() {
                 const blobUrl = URL.createObjectURL(blob);
                 const safeName = (cleanTitle.replace(/[^a-zA-Z0-9_\-\s]/g, "").trim().slice(0, 40) || "youtube_video") + ".mp4";
 
-                // Step 3: Trigger download via ext.downloads or anchor click
-                if (ext && ext.downloads?.download) {
-                    try {
-                        ext.downloads.download({
-                            url: blobUrl,
-                            filename: safeName,
-                            saveAs: false
-                        }, (downloadId) => {
-                            if (ext.runtime?.lastError) {
-                                console.warn("downloads error, falling back to <a>:", ext.runtime.lastError.message);
-                                triggerAnchorDownload(blobUrl, safeName);
-                            }
-                        });
-                    } catch {
-                        triggerAnchorDownload(blobUrl, safeName);
-                    }
-                } else {
-                    triggerAnchorDownload(blobUrl, safeName);
-                }
+                // Step 3: Save file (native extension or browser API)
+                await saveVideoFile(blob, safeName, false);
 
                 const finishMsg = watermark
                     ? "Downloaded & watermarked successfully! ✓"
@@ -672,7 +655,115 @@ function triggerAnchorDownload(url, filename) {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    setTimeout(() => {
+        if (typeof url === "string" && url.startsWith("blob:")) {
+            try { URL.revokeObjectURL(url); } catch {}
+        }
+    }, 45000);
+}
+
+async function saveVideoFile(urlOrBlob, filename = "video.mp4", forcePrompt = true) {
+    let resolvedUrl = urlOrBlob;
+    let isCreatedBlob = false;
+
+    if (urlOrBlob instanceof Blob) {
+        resolvedUrl = URL.createObjectURL(urlOrBlob);
+        isCreatedBlob = true;
+    }
+
+    // 1. Modern File System Access API (window.showSaveFilePicker)
+    // Directly opens the native Windows / macOS / Linux "Save As" file dialog!
+    if (forcePrompt && typeof window.showSaveFilePicker === "function") {
+        try {
+            const handle = await window.showSaveFilePicker({
+                suggestedName: filename,
+                types: [{
+                    description: "MP4 Video (*.mp4)",
+                    accept: { "video/mp4": [".mp4"] }
+                }]
+            });
+            const writable = await handle.createWritable();
+            if (urlOrBlob instanceof Blob) {
+                await writable.write(urlOrBlob);
+            } else {
+                const resp = await fetch(resolvedUrl);
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                if (resp.body && typeof resp.body.pipeTo === "function") {
+                    await resp.body.pipeTo(writable);
+                } else {
+                    const blob = await resp.blob();
+                    await writable.write(blob);
+                }
+            }
+            await writable.close();
+            if (isCreatedBlob) {
+                try { URL.revokeObjectURL(resolvedUrl); } catch {}
+            }
+            return true;
+        } catch (pickerErr) {
+            if (pickerErr.name === "AbortError") {
+                console.log("[ShortBot] User cancelled Save As dialog.");
+                if (isCreatedBlob) {
+                    try { URL.revokeObjectURL(resolvedUrl); } catch {}
+                }
+                return false;
+            }
+            console.warn("[ShortBot] showSaveFilePicker fallback:", pickerErr);
+        }
+    }
+
+    // 2. WebExtension Downloads API with saveAs: true (Firefox & Chrome extension contexts)
+    if (ext && ext.downloads && typeof ext.downloads.download === "function") {
+        // Firefox WebExtension returns a Promise and requires exactly 1 argument (options)
+        if (typeof browser !== "undefined" && browser.downloads?.download) {
+            try {
+                const dlId = await browser.downloads.download({
+                    url: resolvedUrl,
+                    filename: filename,
+                    saveAs: Boolean(forcePrompt)
+                });
+                return Boolean(dlId);
+            } catch (ffErr) {
+                const msg = String(ffErr?.message || "").toLowerCase();
+                if (msg.includes("canceled") || msg.includes("cancelled") || msg.includes("user")) {
+                    console.log("[ShortBot] User cancelled download dialog.");
+                    return false;
+                }
+                console.warn("[ShortBot] Firefox downloads.download failed:", ffErr);
+            }
+        } else if (typeof chrome !== "undefined" && chrome.downloads?.download) {
+            const chromeRes = await new Promise((resolve) => {
+                try {
+                    chrome.downloads.download({
+                        url: resolvedUrl,
+                        filename: filename,
+                        saveAs: Boolean(forcePrompt)
+                    }, (id) => {
+                        if (chrome.runtime?.lastError) {
+                            const errStr = String(chrome.runtime.lastError.message || "").toLowerCase();
+                            if (errStr.includes("canceled") || errStr.includes("cancelled") || errStr.includes("user")) {
+                                resolve(false);
+                                return;
+                            }
+                            console.warn("[ShortBot] Chrome downloads.download error:", chrome.runtime.lastError.message);
+                            resolve(null);
+                        } else {
+                            resolve(Boolean(id));
+                        }
+                    });
+                } catch {
+                    resolve(null);
+                }
+            });
+            if (chromeRes !== null) {
+                return chromeRes;
+            }
+        }
+    }
+
+    // 3. Fallback: Trigger anchor download
+    triggerAnchorDownload(resolvedUrl, filename);
+    return true;
 }
 
 // --------------------------------------------------
@@ -838,24 +929,8 @@ function setupDirectDownloadSection() {
                 if (vidId) safeName = `short_${vidId}.mp4`;
             } catch {}
 
-            // Trigger download via ext.downloads or anchor click
-            if (ext && ext.downloads?.download) {
-                try {
-                    ext.downloads.download({
-                        url: blobUrl,
-                        filename: safeName,
-                        saveAs: false
-                    }, (downloadId) => {
-                        if (ext.runtime?.lastError) {
-                            triggerAnchorDownload(blobUrl, safeName);
-                        }
-                    });
-                } catch {
-                    triggerAnchorDownload(blobUrl, safeName);
-                }
-            } else {
-                triggerAnchorDownload(blobUrl, safeName);
-            }
+            // Save file (native extension or browser API)
+            await saveVideoFile(blob, safeName, false);
 
             const finishMsg = watermark
                 ? "Downloaded & watermarked successfully! ✓"
@@ -1788,35 +1863,40 @@ async function compileSelected() {
             const serverFilename = resultData.filename || `compilation_${compileTaskId}.mp4`;
             const base = BACKEND_URL || "http://127.0.0.1:5000";
             downloadUrl = `${base}/file/${serverFilename}`;
+
+            // Clean up state for deleted source shorts
+            if (Array.isArray(resultData.deleted_files)) {
+                for (const delName of resultData.deleted_files) {
+                    delete downloadedFiles[delName];
+                }
+            }
         } else {
             const blob = await response.blob();
             downloadUrl = window.URL.createObjectURL(blob);
         }
 
-        // Trigger native download
-        if (ext && ext.downloads?.download) {
-            try {
-                const dlReq = ext.downloads.download({
-                    url: downloadUrl,
-                    filename: finalFilename,
-                    saveAs: true
-                }, (downloadId) => {
-                    if (ext.runtime?.lastError) {
-                        triggerAnchorDownload(downloadUrl, finalFilename);
-                    }
-                });
-                if (dlReq && typeof dlReq.catch === "function") {
-                    dlReq.catch((err) => {
-                        console.warn("downloads.download failed, fallback to anchor:", err);
-                        triggerAnchorDownload(downloadUrl, finalFilename);
-                    });
+        // Trigger native download with "Save As" location prompt
+        const saved = await saveVideoFile(downloadUrl, finalFilename, true);
+
+        // Reconcile and refresh state for shorts whose individual source clips were deleted
+        await refreshDownloadedFiles();
+        for (const short of shorts) {
+            const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+            const inferred = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
+            const stillDownloaded = Boolean(
+                (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) ||
+                (inferred && downloadedFiles[inferred])
+            );
+            if (!stillDownloaded) {
+                short.downloadedFilename = null;
+                const btn = document.getElementById(`download-button-${short.index}`);
+                if (btn) {
+                    btn.textContent = "DOWNLOAD";
+                    delete btn.dataset.downloaded;
                 }
-            } catch (dlErr) {
-                triggerAnchorDownload(downloadUrl, finalFilename);
             }
-        } else {
-            triggerAnchorDownload(downloadUrl, finalFilename);
         }
+        updateSelectionControls();
 
         const compileElapsedSeconds = (performance.now() - compileStartTime) / 1000;
         compileTracker.complete(`Compilation complete in ${compileElapsedSeconds.toFixed(1)}s! ✓`);

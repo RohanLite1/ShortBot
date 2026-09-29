@@ -1206,11 +1206,27 @@ def compile_shorts():
         print(output_file)
         print()
 
+        # Clean up individual source shorts that were merged into the compilation
+        deleted_files = []
+        for src_path in valid_files:
+            try:
+                if os.path.isfile(src_path):
+                    os.remove(src_path)
+                    deleted_files.append(os.path.basename(src_path))
+                    print(f"Deleted source short after compilation: {src_path}")
+                # Also delete any temporary watermarked variant of this clip
+                wm_variant = src_path.replace(".mp4", "_watermarked.mp4")
+                if os.path.isfile(wm_variant):
+                    os.remove(wm_variant)
+            except Exception as del_err:
+                print(f"Warning: could not delete {src_path}: {del_err}")
+
         if return_json:
             return jsonify({
                 "success": True,
                 "filename": f"compilation_{compile_id}.mp4",
-                "download_url": f"/file/compilation_{compile_id}.mp4"
+                "download_url": f"/file/compilation_{compile_id}.mp4",
+                "deleted_files": deleted_files
             })
 
         return send_file(
