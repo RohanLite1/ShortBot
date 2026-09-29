@@ -28,27 +28,6 @@
 
 ---
 
-## Architecture
-
-```
-+---------------------------------+
-|     Mozilla Firefox Add-on      |
-|  (Modern MV3 Dark Mode UI)      |
-+----------------+----------------+
-                 | Native Messaging / HTTP
-                 v
-+---------------------------------+
-|   ShortBot Companion Engine     |
-|   (Standalone Windows Binary)   |
-+----------------+----------------+
-|  Native Host   |  Bundled FFmpeg|
-|  (stdio bridge)|  (watermark &  |
-|                |   compilation) |
-+----------------+----------------+
-|       Dual AI Curator           |
-|  Gemini Flash API + Offline NLP |
-+---------------------------------+
-```
 
 ---
 
@@ -93,10 +72,6 @@ ShortBot/
 4. Click the ShortBot icon in your toolbar and start curating Shorts.
 
 ---
-
-## Testing on Another Computer (Friend's PC)
-
-Your friend does not need Python, Node.js, FFmpeg, or Ollama installed. Everything is pre-bundled in the companion release.
 
 ### Step-by-Step Instructions:
 
