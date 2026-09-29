@@ -2,7 +2,7 @@
 ; Inno Setup 6+ script
 
 #define MyAppName "ShortBot Engine"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.1.0"
 #define MyAppPublisher "ShortBot"
 #define MyAppURL "https://github.com/bigmanrohan12/ShortBot"
 #define MyAppExeName "ShortBot-Engine.exe"

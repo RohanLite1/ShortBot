@@ -101,6 +101,54 @@
                 <div id="activeVideoStatus" class="active-video-status"></div>
             </section>
 
+            <!-- Direct YouTube Video URL Download Card -->
+            <section id="directVideoCard" class="direct-video-card">
+                <div class="direct-card-tag">DOWNLOAD BY URL</div>
+                <div class="direct-input-row">
+                    <input
+                        type="url"
+                        id="directUrlInput"
+                        class="direct-url-input"
+                        placeholder="Paste YouTube or Shorts URL (e.g. https://youtube.com/shorts/...)"
+                        autocomplete="off"
+                        spellcheck="false"
+                    >
+                    <button id="directDownloadButton" class="btn-direct-download" type="button">
+                        ⬇ DOWNLOAD
+                    </button>
+                </div>
+                <div class="direct-options-row">
+                    <label class="active-watermark-toggle" for="directWatermarkCheckbox" title="Add watermark to this video download">
+                        <input type="checkbox" id="directWatermarkCheckbox">
+                        <span class="active-checkbox-box">
+                            <svg class="active-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+                                <polyline points="20 6 9 17 4 12"></polyline>
+                            </svg>
+                        </span>
+                        <span class="active-watermark-label" id="directWatermarkLabel">Add watermark</span>
+                    </label>
+                </div>
+                <!-- Progress Bar for Direct Video Download -->
+                <div id="directProgressContainer" class="progress-card" style="display: none;">
+                    <div class="progress-header">
+                        <span id="directProgressStage" class="progress-stage">Initializing download...</span>
+                        <span class="progress-meta">
+                            <span id="directProgressPercent" class="progress-percent">0%</span>
+                            <span id="directProgressTimer" class="progress-timer">⏱ 00:00</span>
+                        </span>
+                    </div>
+                    <div class="progress-track">
+                        <div id="directProgressFill" class="progress-fill" style="width: 0%;"></div>
+                    </div>
+                    <div id="directProgressDetail" class="progress-detail">Connecting to YouTube...</div>
+                </div>
+                <div id="directVideoStatus" class="direct-video-status"></div>
+            </section>
+
+            <div class="section-divider">
+                <span>OR SEARCH WITH AI CURATION</span>
+            </div>
+
             <label for="request">
                 What Shorts are you looking for?
             </label>

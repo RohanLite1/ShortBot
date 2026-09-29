@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ShortBot - AI YouTube Shorts Curator",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "AI-assisted YouTube Shorts finder, downloader, and compilation tool.",
   "browser_specific_settings": {
     "gecko": {

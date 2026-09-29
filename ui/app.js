@@ -643,19 +643,233 @@ async function checkActiveYouTubeTab() {
                 statusEl.className = "active-video-status error";
             }
         };
-
-        function triggerAnchorDownload(url, filename) {
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = filename;
-            document.body.appendChild(a);
-            a.click();
-            a.remove();
-            setTimeout(() => URL.revokeObjectURL(url), 30000);
-        }
     } catch (e) {
         console.log("Could not check active tab:", e);
     }
+}
+
+function triggerAnchorDownload(url, filename) {
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+// --------------------------------------------------
+// DIRECT YOUTUBE VIDEO / SHORTS DOWNLOAD HANDLER
+// --------------------------------------------------
+
+function setupDirectDownloadSection() {
+    const directInput = document.getElementById("directUrlInput");
+    const directBtn = document.getElementById("directDownloadButton");
+    const watermarkCheckbox = document.getElementById("directWatermarkCheckbox");
+    const watermarkLabel = document.getElementById("directWatermarkLabel");
+    const statusEl = document.getElementById("directVideoStatus");
+
+    if (!directInput || !directBtn || !statusEl) return;
+
+    function updateWatermarkCheckboxUI() {
+        if (!watermarkCheckbox) return;
+        const currentWm = getWatermark();
+        if (currentWm) {
+            watermarkCheckbox.title = watermarkCheckbox.checked 
+                ? `Watermark "${currentWm}" will be added to this video` 
+                : `Check to add watermark "${currentWm}" to this video`;
+            if (watermarkLabel) {
+                const displayWm = currentWm.length > 14 ? currentWm.slice(0, 12) + "…" : currentWm;
+                watermarkLabel.textContent = `Watermark (${displayWm})`;
+            }
+        } else {
+            watermarkCheckbox.title = "Add watermark (set watermark handle in the field below)";
+            if (watermarkLabel) {
+                watermarkLabel.textContent = "Add watermark";
+            }
+        }
+    }
+
+    if (watermarkCheckbox) {
+        storage.get(["savedDirectWatermarkCheckbox"]).then((data) => {
+            if (data.savedDirectWatermarkCheckbox !== undefined) {
+                watermarkCheckbox.checked = Boolean(data.savedDirectWatermarkCheckbox);
+            } else {
+                watermarkCheckbox.checked = Boolean(getWatermark());
+            }
+            updateWatermarkCheckboxUI();
+        });
+
+        watermarkCheckbox.onchange = () => {
+            storage.set({ savedDirectWatermarkCheckbox: watermarkCheckbox.checked });
+            updateWatermarkCheckboxUI();
+        };
+    }
+
+    if (watermarkInput) {
+        watermarkInput.addEventListener("input", updateWatermarkCheckboxUI);
+    }
+
+    const directProgress = new ProgressTracker({
+        container: "directProgressContainer",
+        fill: "directProgressFill",
+        percent: "directProgressPercent",
+        stage: "directProgressStage",
+        timer: "directProgressTimer",
+        detail: "directProgressDetail"
+    });
+
+    async function handleDirectDownload() {
+        const rawUrl = directInput.value.trim();
+        if (!rawUrl) {
+            statusEl.textContent = "Please enter or paste a YouTube video or Shorts link.";
+            statusEl.className = "direct-video-status error";
+            directInput.focus();
+            return;
+        }
+
+        const isYouTube = rawUrl.includes("youtube.com") || rawUrl.includes("youtu.be");
+        if (!isYouTube) {
+            statusEl.textContent = "Please enter a valid YouTube or Shorts URL (e.g. https://www.youtube.com/shorts/...).";
+            statusEl.className = "direct-video-status error";
+            return;
+        }
+
+        const cleanUrl = extractCleanYouTubeUrl(rawUrl) || rawUrl;
+        const taskId = "direct_dl_" + Date.now();
+
+        directBtn.disabled = true;
+        directBtn.textContent = "CHECKING BACKEND...";
+        statusEl.textContent = "Connecting to ShortBot backend...";
+        statusEl.className = "direct-video-status pending";
+
+        directProgress.start("Connecting to backend...", 5);
+
+        try {
+            // Step 1: Verify backend is reachable, auto-start if needed
+            let isAlive = false;
+            try {
+                const pingCtrl = new AbortController();
+                const pingTimer = setTimeout(() => pingCtrl.abort(), 1800);
+                const pingRes = await fetch(`${BACKEND_URL}/health`, { signal: pingCtrl.signal });
+                clearTimeout(pingTimer);
+                isAlive = pingRes.ok;
+            } catch {
+                isAlive = false;
+            }
+
+            if (!isAlive) {
+                directBtn.textContent = "STARTING SERVER...";
+                statusEl.textContent = "Backend offline. Launching ShortBot backend...";
+                directProgress.update(10, "Starting backend...", "Launching backend daemon...");
+                isAlive = await checkAndAutoStartBackend();
+            }
+
+            if (!isAlive) {
+                directBtn.disabled = false;
+                directBtn.textContent = "⬇ DOWNLOAD";
+                statusEl.innerHTML = 'ShortBot backend is offline. Run <code style="background:rgba(255,255,255,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;">python backend.py</code> in terminal, or click the status badge above to retry.';
+                statusEl.className = "direct-video-status error";
+                directProgress.fail("ShortBot backend is offline");
+                return;
+            }
+
+            // Step 2: Request download with real-time progress tracking
+            directBtn.textContent = "DOWNLOADING...";
+            statusEl.textContent = "Downloading & processing video with yt-dlp...";
+            statusEl.className = "direct-video-status pending";
+
+            const applyWm = watermarkCheckbox ? watermarkCheckbox.checked : false;
+            const watermark = applyWm ? getWatermark() : "";
+
+            const detailMsg = watermark 
+                ? `Downloading with watermark '${watermark}'...` 
+                : "Connecting to YouTube stream...";
+            directProgress.update(15, "Starting download...", detailMsg);
+            directProgress.pollTask(taskId);
+
+            let res;
+            try {
+                res = await fetch(`${BACKEND_URL}/download`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        url: cleanUrl,
+                        watermark: watermark,
+                        server_only: false,
+                        task_id: taskId
+                    })
+                });
+            } catch (fetchErr) {
+                throw new Error("Could not connect to backend server at 127.0.0.1:5000. Is backend running?");
+            }
+
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.details || err.error || `Download failed with HTTP ${res.status}`);
+            }
+
+            directProgress.update(98, "Saving file...", "Receiving media stream...");
+            const blob = await res.blob();
+            const blobUrl = URL.createObjectURL(blob);
+            
+            // Extract a filename hint
+            let safeName = "youtube_video.mp4";
+            try {
+                const urlObj = new URL(cleanUrl);
+                const vidId = urlObj.searchParams.get("v") || urlObj.pathname.split("/").filter(Boolean).pop();
+                if (vidId) safeName = `short_${vidId}.mp4`;
+            } catch {}
+
+            // Trigger download via ext.downloads or anchor click
+            if (ext && ext.downloads?.download) {
+                try {
+                    ext.downloads.download({
+                        url: blobUrl,
+                        filename: safeName,
+                        saveAs: false
+                    }, (downloadId) => {
+                        if (ext.runtime?.lastError) {
+                            triggerAnchorDownload(blobUrl, safeName);
+                        }
+                    });
+                } catch {
+                    triggerAnchorDownload(blobUrl, safeName);
+                }
+            } else {
+                triggerAnchorDownload(blobUrl, safeName);
+            }
+
+            const finishMsg = watermark
+                ? "Downloaded & watermarked successfully! ✓"
+                : "Downloaded successfully! ✓";
+            directProgress.complete(finishMsg);
+            directProgress.hide(6000);
+
+            directBtn.disabled = false;
+            directBtn.textContent = watermark ? "SAVED (WATERMARKED) ✓" : "DOWNLOADED ✓";
+            statusEl.textContent = `Saved: ${safeName}` + (watermark ? ` (watermark: "${watermark}")` : "");
+            statusEl.className = "direct-video-status success";
+            if (typeof refreshDownloadedFiles === "function") {
+                refreshDownloadedFiles();
+            }
+        } catch (err) {
+            console.error("Direct download error:", err);
+            directProgress.fail(err.message);
+            directBtn.disabled = false;
+            directBtn.textContent = "⬇ DOWNLOAD";
+            statusEl.textContent = "Download failed: " + err.message;
+            statusEl.className = "direct-video-status error";
+        }
+    }
+
+    directBtn.onclick = handleDirectDownload;
+    directInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter") {
+            e.preventDefault();
+            handleDirectDownload();
+        }
+    });
 }
 
 
@@ -2334,6 +2548,7 @@ async function initApp() {
         await restoreAppState();
         checkAndAutoStartBackend();
         checkActiveYouTubeTab();
+        setupDirectDownloadSection();
     } catch (err) {
         console.error("ShortBot initApp error:", err);
     }
