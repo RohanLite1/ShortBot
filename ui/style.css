@@ -619,8 +619,47 @@ input::placeholder {
     font-style: italic;
 }
 
-#quantity {
-    width: 110px;
+/* Inline Form Row (Quantity + Watermark on Same Line) */
+.form-row {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+    width: 100%;
+    margin-top: 4px;
+}
+
+.form-group {
+    display: flex;
+    flex-direction: column;
+}
+
+.form-group label {
+    margin-top: 0;
+    margin-bottom: 6px;
+}
+
+.form-group-sm {
+    flex: 0 0 130px;
+    max-width: 130px;
+}
+
+.form-group-sm input {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
+.form-group-lg {
+    flex: 1;
+}
+
+.form-group-lg input {
+    width: 100% !important;
+    max-width: 100% !important;
+}
+
+.form-group-lg .field-help {
+    margin-top: 5px;
+    margin-bottom: 0;
 }
 
 .field-help {

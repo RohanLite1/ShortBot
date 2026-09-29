@@ -159,32 +159,34 @@
             ></textarea>
 
 
-            <label for="quantity">
-                Number of Shorts
-            </label>
+            <div class="form-row">
+                <div class="form-group form-group-sm">
+                    <label for="quantity">
+                        Number of Shorts
+                    </label>
+                    <input
+                        type="number"
+                        id="quantity"
+                        min="1"
+                        value="5"
+                    >
+                </div>
 
-            <input
-                type="number"
-                id="quantity"
-                min="1"
-                value="5"
-            >
-
-
-            <label for="watermark">
-                Watermark
-            </label>
-
-            <input
-                type="text"
-                id="watermark"
-                placeholder="@YourHandle"
-                maxlength="50"
-            >
-
-            <p class="field-help">
-                This watermark will appear on the compiled video.
-            </p>
+                <div class="form-group form-group-lg">
+                    <label for="watermark">
+                        Watermark
+                    </label>
+                    <input
+                        type="text"
+                        id="watermark"
+                        placeholder="@YourHandle"
+                        maxlength="50"
+                    >
+                    <p class="field-help">
+                        This watermark will appear on the compiled video.
+                    </p>
+                </div>
+            </div>
 
 
             <button id="searchButton">
