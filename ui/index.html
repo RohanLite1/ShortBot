@@ -45,22 +45,49 @@
 
         </header>
 
-        <!-- Engine Offline / First Run Helper Banner -->
+        <!-- Companion Engine Setup & Status Banner -->
         <div id="engineNotice" class="engine-notice" style="display: none;">
-            <div class="engine-notice-content">
-                <div class="engine-notice-icon">⚙️</div>
-                <div class="engine-notice-body">
-                    <strong>ShortBot Desktop Companion Required</strong>
-                    <p>To download 1080p Shorts and compile videos with watermarks, run the lightweight companion engine on your PC.</p>
-                    <div class="engine-notice-actions">
-                        <a id="btnDownloadEngine" href="https://github.com/bigmanrohan12/ShortBot/releases" target="_blank" class="btn-engine-download">
-                            ⬇ Download Companion App (.zip)
-                        </a>
-                        <button id="btnRetryEngine" class="btn-engine-retry" type="button">
-                            🔄 Re-check Connection
-                        </button>
-                    </div>
+            <div class="engine-notice-badge-row">
+                <span class="engine-pill-trust">🔒 100% Local &amp; Safe</span>
+                <span class="engine-pill-sub">No Admin Rights Needed</span>
+                <span class="engine-pill-sub">Zero Cloud Tracking</span>
+            </div>
+            <div class="engine-notice-header">
+                <div class="engine-notice-icon">⚡</div>
+                <div>
+                    <strong class="engine-notice-title">ShortBot Desktop Companion Required</strong>
+                    <p class="engine-notice-desc">Browsers cannot download raw 1080p streams or render video edits alone. ShortBot runs a lightweight companion engine directly on your PC to process media privately.</p>
                 </div>
+            </div>
+            <div class="engine-steps-card">
+                <div class="engine-step">
+                    <span class="engine-step-num">1</span>
+                    <span class="engine-step-text">Download <strong>ShortBot-Setup.exe</strong></span>
+                </div>
+                <div class="engine-step-arrow">➔</div>
+                <div class="engine-step">
+                    <span class="engine-step-num">2</span>
+                    <span class="engine-step-text">Run installer <em>(Takes 5 seconds)</em></span>
+                </div>
+                <div class="engine-step-arrow">➔</div>
+                <div class="engine-step">
+                    <span class="engine-step-num">3</span>
+                    <span class="engine-step-text">Auto-connects here!</span>
+                </div>
+            </div>
+            <div class="engine-notice-actions">
+                <a id="btnDownloadEngine" href="https://github.com/bigmanrohan12/ShortBot/releases/latest" target="_blank" class="btn-engine-download">
+                    ⬇ Download Windows Setup (.exe)
+                </a>
+                <button id="btnRetryEngine" class="btn-engine-retry" type="button">
+                    🔄 Re-check Connection
+                </button>
+                <a href="https://github.com/bigmanrohan12/ShortBot/releases" target="_blank" class="engine-alt-link">
+                    Releases &amp; Source
+                </a>
+            </div>
+            <div class="engine-listener-status" id="engineListeningStatus">
+                <span class="pulse-indicator"></span> Auto-detecting installation in background...
             </div>
         </div>
 

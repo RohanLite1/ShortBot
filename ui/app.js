@@ -381,6 +381,10 @@ async function checkAndAutoStartBackend() {
 
     let ok = await ping();
     if (ok) {
+        if (window._enginePollingInterval) {
+            clearInterval(window._enginePollingInterval);
+            window._enginePollingInterval = null;
+        }
         badge.className = "server-badge online";
         badgeText.textContent = "Backend Online";
         if (notice) notice.style.display = "none";
@@ -398,6 +402,10 @@ async function checkAndAutoStartBackend() {
         for (let i = 0; i < 6; i++) {
             await new Promise((r) => setTimeout(r, 1000));
             if (await ping()) {
+                if (window._enginePollingInterval) {
+                    clearInterval(window._enginePollingInterval);
+                    window._enginePollingInterval = null;
+                }
                 badge.className = "server-badge online";
                 badgeText.textContent = "Backend Online";
                 if (notice) notice.style.display = "none";
@@ -415,6 +423,36 @@ async function checkAndAutoStartBackend() {
         badgeText.textContent = "Checking...";
         checkAndAutoStartBackend();
     };
+
+    // Auto-detect newly installed companion engine in background
+    if (!window._enginePollingInterval) {
+        window._enginePollingInterval = setInterval(async () => {
+            const isUp = await ping();
+            if (isUp) {
+                clearInterval(window._enginePollingInterval);
+                window._enginePollingInterval = null;
+                badge.className = "server-badge online";
+                badgeText.textContent = "Backend Online";
+                if (notice) notice.style.display = "none";
+                refreshDownloadedFiles();
+            } else {
+                // If native messaging host was just installed, trigger start
+                const hostRes = await sendNativeHostMessage({ action: "start" });
+                if (hostRes) {
+                    await new Promise((r) => setTimeout(r, 1000));
+                    if (await ping()) {
+                        clearInterval(window._enginePollingInterval);
+                        window._enginePollingInterval = null;
+                        badge.className = "server-badge online";
+                        badgeText.textContent = "Backend Online";
+                        if (notice) notice.style.display = "none";
+                        refreshDownloadedFiles();
+                    }
+                }
+            }
+        }, 3000);
+    }
+
     return false;
 }
 

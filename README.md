@@ -39,7 +39,7 @@ ShortBot/
 │   ├── app.js                       # Extension logic and native messaging bridge
 │   ├── index.html                   # Dark Mode UI
 │   ├── style.css                    # Century Gothic styling
-│   ├── manifest.json                # WebExtension manifest (v1.1.0)
+│   ├── manifest.json                # WebExtension manifest (v1.1.1)
 │   └── icons/                       # Extension icons
 ├── docs/                            # Documentation and benchmarks
 │   └── TIMINGS_AND_BENCHMARKS.md    # Performance benchmarks
@@ -60,39 +60,40 @@ ShortBot/
 
 ## Quick Start (For Users)
 
-### 1. Run the Desktop Companion Engine
-1. Extract `ShortBot-Engine-Windows.zip` or open the `ShortBot-Engine` folder.
-2. Double-click `Install-ShortBot.bat`.
-   - This automatically registers the native host for Firefox, Edge, and Chrome, and starts the companion engine silently.
+### 1. Install Desktop Companion Engine (1-Click)
+1. Download **`ShortBot-Setup.exe`**.
+2. Run the installer and click **Next ➔ Install ➔ Finish**.
+   - No Administrator / UAC permissions required (installs directly into `%LOCALAPPDATA%\ShortBot`).
+   - Automatically registers the native host for Firefox, Google Chrome, and Microsoft Edge.
+   - Starts the companion engine silently in the background.
 
-### 2. Load the Firefox Extension
-1. Open Mozilla Firefox and go to `about:debugging#/runtime/this-firefox`.
-2. Click "Load Temporary Add-on...".
-3. Select `shortbot-firefox.xpi` (or `ui/manifest.json`).
-4. Click the ShortBot icon in your toolbar and start curating Shorts.
+### 2. Load the Extension
+1. Open Mozilla Firefox and go to `about:debugging#/runtime/this-firefox` (or `chrome://extensions` / `edge://extensions`).
+2. Click "Load Temporary Add-on..." and select `shortbot-firefox.xpi` (or load unpacked `ui/`).
+3. Click the ShortBot icon in your toolbar — the companion engine status badge will automatically turn green (**Backend Online**).
 
 ---
 
+## Testing on Another Computer (Friend's PC)
+
+Your friend does **not** need Python, Node.js, FFmpeg, or any technical setup.
 ### Step-by-Step Instructions:
 
 1. **Send the two files to your friend**:
-   - `ShortBot-Engine-Windows.zip` (the standalone engine)
+   - `ShortBot-Setup.exe` (the Windows standalone installer)
    - `shortbot-firefox.xpi` (the Firefox extension)
 
 2. **On your friend's PC**:
-   - **Step A: Extract Engine**
-     - Right-click `ShortBot-Engine-Windows.zip` and select **Extract All**.
-     - Open the extracted folder and double-click `Install-ShortBot.bat`.
-     - A terminal window will open, register the native host in their Windows registry for Firefox/Chrome/Edge, start the engine silently in the background, and close automatically.
+   - **Step A: Run Setup**
+     - Double-click `ShortBot-Setup.exe`.
+     - Follow the standard Windows wizard (takes ~5 seconds). Zero command prompt windows or batch scripts!
    - **Step B: Load Extension in Firefox**
      - Open Firefox and navigate to: `about:debugging#/runtime/this-firefox`.
-     - Click **Load Temporary Add-on...**.
-     - Select the `shortbot-firefox.xpi` file.
-   - **Step C: Test Download & Curation**
-     - Click the ShortBot icon in the Firefox toolbar.
-     - The status badge in the top right will show **Backend Online** with a green dot.
-     - Paste any YouTube Shorts URL into the "Download by URL" box and click Download, or type a topic in "What Shorts are you looking for?" and click "Find Shorts".
-     - The video will download and save directly to their standard Downloads folder.
+     - Click **Load Temporary Add-on...** and select `shortbot-firefox.xpi`.
+   - **Step C: Use ShortBot**
+     - Click the ShortBot icon in the toolbar.
+     - The status badge shows **Backend Online** with a green dot.
+     - Start curating, downloading 1080p Shorts, and compiling videos seamlessly!
 
 ---
 

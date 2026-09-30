@@ -23,6 +23,25 @@ def find_system_ffmpeg_dir():
         return os.path.dirname(ffmpeg_exe)
     return None
 
+def find_iscc():
+    candidates = [
+        shutil.which("iscc"),
+        shutil.which("ISCC.exe"),
+        r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+        r"C:\Program Files\Inno Setup 6\ISCC.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inno Setup 6\ISCC.exe"),
+        r"C:\Users\bigma\AppData\Local\Programs\Antigravity IDE\resources\app\node_modules\innosetup\bin\ISCC.exe",
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if local_appdata and os.path.isdir(local_appdata):
+        for root, dirs, files in os.walk(local_appdata):
+            if "ISCC.exe" in files:
+                return os.path.join(root, "ISCC.exe")
+    return None
+
 def build():
     pyinstaller = find_pyinstaller()
     print("=" * 60)
@@ -177,7 +196,12 @@ ping -n 3 127.0.0.1 >nul
 
 """)
 
-    # Clean temporary downloads and log artifacts
+    # 4. Clean temporary downloads and log artifacts
+    downloads_dir = os.path.join(OUTPUT_DIR, "downloads")
+    if os.path.isdir(downloads_dir):
+        shutil.rmtree(downloads_dir, ignore_errors=True)
+    os.makedirs(downloads_dir, exist_ok=True)
+
     for root, dirs, files in os.walk(OUTPUT_DIR):
         for f in files:
             if f.lower().endswith((".mp4", ".mkv", ".webm", ".part", ".ytdl", ".log")):
@@ -186,10 +210,35 @@ ping -n 3 127.0.0.1 >nul
                 except Exception:
                     pass
 
-    # 5. Create Distribution Zips (Lightweight ~29MB + Full Offline ~114MB)
+    # 5. Compile Native Inno Setup Windows Installers (.exe)
+    print("\n[4/5] Compiling native Windows Setup wizards...")
+    iscc = find_iscc()
+    setup_full = os.path.join(DIST_DIR, "ShortBot-Setup.exe")
+    setup_lite = os.path.join(DIST_DIR, "ShortBot-Setup-Lite.exe")
+
+    if iscc:
+        iss_path = os.path.join(BASE_DIR, "installer.iss")
+        print(f"  + Found Inno Setup Compiler: {iscc}")
+
+        # Build Lite installer (~26 MB)
+        print("  -> Compiling ShortBot-Setup-Lite.exe (ultra-compact, ~26MB)...")
+        subprocess.run([iscc, "/Q", "/DMyAppFlavor=Lite", iss_path], cwd=BASE_DIR)
+
+        # Build Full installer (~81 MB)
+        print("  -> Compiling ShortBot-Setup.exe (full offline bundle with FFmpeg)...")
+        subprocess.run([iscc, "/Q", "/DMyAppFlavor=Full", iss_path], cwd=BASE_DIR)
+
+        if os.path.isfile(setup_lite):
+            print(f"  + SUCCESS (Lite): {setup_lite} ({os.path.getsize(setup_lite)/(1024*1024):.1f} MB)")
+        if os.path.isfile(setup_full):
+            print(f"  + SUCCESS (Full): {setup_full} ({os.path.getsize(setup_full)/(1024*1024):.1f} MB)")
+    else:
+        print("  ! Note: ISCC.exe not found. Setup wizard not compiled.")
+
+    # 6. Create Release Distribution Packages (.zip)
     print("\n[5/5] Creating release distribution packages...")
     
-    # 5a. Lightweight release (~29MB - Recommended for GitHub)
+    # 6a. Lightweight release (~29MB - Recommended for GitHub)
     zip_light = os.path.join(DIST_DIR, "ShortBot-Engine-Windows.zip")
     with zipfile.ZipFile(zip_light, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for root, dirs, files in os.walk(OUTPUT_DIR):
@@ -201,7 +250,7 @@ ping -n 3 127.0.0.1 >nul
                 rel_p = os.path.relpath(abs_p, DIST_DIR)
                 z.write(abs_p, rel_p)
 
-    # 5b. Full offline release (with bundled FFmpeg)
+    # 6b. Full offline release (with bundled FFmpeg)
     zip_full = os.path.join(DIST_DIR, "ShortBot-Engine-Windows-Full.zip")
     with zipfile.ZipFile(zip_full, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         for root, dirs, files in os.walk(OUTPUT_DIR):
@@ -217,8 +266,12 @@ ping -n 3 127.0.0.1 >nul
     print("\n" + "=" * 60)
     print("[SUCCESS] Standalone Companion Packages Complete!")
     print(f"Folder:       {OUTPUT_DIR}")
-    print(f"Lightweight:  {zip_light} ({size_light_mb:.1f} MB) -> FAST DOWNLOAD")
-    print(f"Full Offline: {zip_full} ({size_full_mb:.1f} MB) -> ALL CODECS INCLUDED")
+    if os.path.isfile(setup_lite):
+        print(f"Lite Setup:   {setup_lite} ({os.path.getsize(setup_lite)/(1024*1024):.1f} MB) -> ULTRA-COMPACT 1-CLICK INSTALLER")
+    if os.path.isfile(setup_full):
+        print(f"Full Setup:   {setup_full} ({os.path.getsize(setup_full)/(1024*1024):.1f} MB) -> ALL CODECS INCLUDED")
+    print(f"Lightweight:  {zip_light} ({size_light_mb:.1f} MB) -> FAST DOWNLOAD ZIP")
+    print(f"Full Offline: {zip_full} ({size_full_mb:.1f} MB) -> ALL CODECS ZIP")
     print("=" * 60)
 
 if __name__ == "__main__":
