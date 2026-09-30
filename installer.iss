@@ -65,14 +65,12 @@ Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\com.shortbot.backend"
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.json"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.json"; Flags: uninsdeletekey
 
-[Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} in background"; Flags: nowait postinstall skipifsilent
-
 [Code]
-// Dynamically write Firefox and Chrome/Edge native messaging JSON manifests on install
+// Dynamically write native messaging manifests, unblock files, and launch engine gracefully
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   AppDir, HostExePath, EscapedHostPath, JsonFirefox, JsonChrome: String;
+  ResultCode: Integer;
 begin
   if CurStep = ssPostInstall then
   begin
@@ -88,6 +86,12 @@ begin
     // 2. Chrome & Edge manifest
     JsonChrome := '{"name":"com.shortbot.backend","description":"ShortBot Native Messaging Host","path":"' + EscapedHostPath + '","type":"stdio","allowed_origins":["chrome-extension://gfoaiibpnmjdgkkfpbkdgodljmepondo/","extension://gfoaiibpnmjdgkkfpbkdgodljmepondo/"]}';
     SaveStringToFile(AppDir + '\com.shortbot.backend.json', JsonChrome, False);
+
+    // 3. Clear Mark of the Web (Zone.Identifier) on all installed files
+    Exec('powershell.exe', '-NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-ChildItem -LiteralPath ''' + AppDir + ''' -Recurse -Force | Unblock-File -ErrorAction SilentlyContinue"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    // 4. Launch engine gracefully using ShellExec (does not throw fatal modal dialogs if blocked by system policy)
+    ShellExec('open', AppDir + '\{#MyAppExeName}', '', '', SW_HIDE, ewNoWait, ResultCode);
   end;
 end;
 
