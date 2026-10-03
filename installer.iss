@@ -46,9 +46,9 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut for ShortBot Engin
 
 [Files]
 #if MyAppFlavor == "Lite"
-Source: "dist\ShortBot-Engine\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.bat,*.log,downloads\*,*.mp4,*.mkv,*.webm,*.part,*.ytdl,bin\*"
+Source: "dist\ShortBot-Engine\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.bat,*.log,downloads\*,*.mp4,*.mkv,*.webm,*.part,*.ytdl,bin\*,__pycache__\*,*.pyc"
 #else
-Source: "dist\ShortBot-Engine\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.bat,*.log,downloads\*,*.mp4,*.mkv,*.webm,*.part,*.ytdl"
+Source: "dist\ShortBot-Engine\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "*.bat,*.log,downloads\*,*.mp4,*.mkv,*.webm,*.part,*.ytdl,__pycache__\*,*.pyc"
 #endif
 
 [Icons]
