@@ -39,7 +39,7 @@ ShortBot/
 │   ├── app.js                       # Extension logic and native messaging bridge
 │   ├── index.html                   # Dark Mode UI
 │   ├── style.css                    # Century Gothic styling
-│   ├── manifest.json                # WebExtension manifest (v1.1.1)
+│   ├── manifest.json                # WebExtension manifest (v1.1.2)
 │   └── icons/                       # Extension icons
 ├── docs/                            # Documentation and benchmarks
 │   └── TIMINGS_AND_BENCHMARKS.md    # Performance benchmarks
@@ -79,13 +79,13 @@ ShortBot/
 Your friend does **not** need Python, Node.js, FFmpeg, or any technical setup.
 ### Step-by-Step Instructions:
 
-1. **Send the two files to your friend**:
-   - `ShortBot-Setup.exe` (the Windows standalone installer)
+1. **Send the installer and extension to your friend**:
+   - `ShortBot-Setup.exe` (Full offline bundle with FFmpeg) or `ShortBot-Setup-Lite.exe` (ultra-compact installer with automatic FFmpeg provisioning)
    - `shortbot-firefox.xpi` (the Firefox extension)
 
 2. **On your friend's PC**:
    - **Step A: Run Setup**
-     - Double-click `ShortBot-Setup.exe`.
+     - Double-click `ShortBot-Setup.exe` (or `ShortBot-Setup-Lite.exe`).
      - Follow the standard Windows wizard (takes ~5 seconds). Zero command prompt windows or batch scripts!
    - **Step B: Load Extension in Firefox**
      - Open Firefox and navigate to: `about:debugging#/runtime/this-firefox`.
@@ -106,7 +106,7 @@ Your friend does **not** need Python, Node.js, FFmpeg, or any technical setup.
 ### Running Locally
 ```powershell
 # 1. Clone repository
-git clone https://github.com/bigmanrohan12/ShortBot.git
+git clone https://github.com/RohanLite1/ShortBot.git
 cd ShortBot
 
 # 2. Set up virtual environment

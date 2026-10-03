@@ -363,10 +363,47 @@ async function checkAndAutoStartBackend() {
             const timer = setTimeout(() => controller.abort(), 2500);
             const res = await fetch(`${BACKEND_URL}/health`, { signal: controller.signal });
             clearTimeout(timer);
-            return res.ok;
+            if (!res.ok) return false;
+            return await res.json().catch(() => ({ success: true, ffmpeg: true }));
         } catch {
             return false;
         }
+    }
+
+    function updateBadgeFromHealth(healthData) {
+        if (!healthData) return false;
+        if (healthData.ffmpeg) {
+            badge.className = "server-badge online";
+            badgeText.textContent = "Backend Online";
+            badge.title = "ShortBot backend and FFmpeg media engine are active and ready.";
+            badge.onclick = () => {
+                badge.className = "server-badge checking";
+                badgeText.textContent = "Checking...";
+                checkAndAutoStartBackend();
+            };
+        } else if (healthData.ffmpeg_status === "downloading") {
+            badge.className = "server-badge starting";
+            const pct = healthData.ffmpeg_progress ? ` (${healthData.ffmpeg_progress}%)` : "";
+            badgeText.textContent = `Setting up FFmpeg${pct}...`;
+            badge.title = "ShortBot is automatically downloading portable FFmpeg for video processing.";
+            badge.onclick = () => checkAndAutoStartBackend();
+        } else {
+            // Backend is up, but FFmpeg is offline/missing
+            badge.className = "server-badge starting";
+            badgeText.textContent = "Backend Online (FFmpeg Setup)";
+            badge.title = "Click to trigger automatic FFmpeg setup.";
+            badge.onclick = async () => {
+                badge.className = "server-badge starting";
+                badgeText.textContent = "Setting up FFmpeg...";
+                try {
+                    await fetch(`${BACKEND_URL}/ffmpeg/install`, { method: "POST" });
+                } catch {}
+                setTimeout(checkAndAutoStartBackend, 1200);
+            };
+        }
+        if (notice) notice.style.display = "none";
+        refreshDownloadedFiles();
+        return true;
     }
 
     const notice = document.getElementById("engineNotice");
@@ -379,16 +416,24 @@ async function checkAndAutoStartBackend() {
         };
     }
 
-    let ok = await ping();
-    if (ok) {
-        if (window._enginePollingInterval) {
+    let healthData = await ping();
+    if (healthData) {
+        if (healthData.ffmpeg && window._enginePollingInterval) {
             clearInterval(window._enginePollingInterval);
             window._enginePollingInterval = null;
+        } else if (!healthData.ffmpeg && !window._enginePollingInterval) {
+            window._enginePollingInterval = setInterval(async () => {
+                const nextHealth = await ping();
+                if (nextHealth) {
+                    updateBadgeFromHealth(nextHealth);
+                    if (nextHealth.ffmpeg) {
+                        clearInterval(window._enginePollingInterval);
+                        window._enginePollingInterval = null;
+                    }
+                }
+            }, 2000);
         }
-        badge.className = "server-badge online";
-        badgeText.textContent = "Backend Online";
-        if (notice) notice.style.display = "none";
-        refreshDownloadedFiles();
+        updateBadgeFromHealth(healthData);
         return true;
     }
 
@@ -401,15 +446,13 @@ async function checkAndAutoStartBackend() {
         // Poll for up to 6 seconds
         for (let i = 0; i < 6; i++) {
             await new Promise((r) => setTimeout(r, 1000));
-            if (await ping()) {
-                if (window._enginePollingInterval) {
+            const hostHealth = await ping();
+            if (hostHealth) {
+                if (hostHealth.ffmpeg && window._enginePollingInterval) {
                     clearInterval(window._enginePollingInterval);
                     window._enginePollingInterval = null;
                 }
-                badge.className = "server-badge online";
-                badgeText.textContent = "Backend Online";
-                if (notice) notice.style.display = "none";
-                refreshDownloadedFiles();
+                updateBadgeFromHealth(hostHealth);
                 return true;
             }
         }
@@ -429,24 +472,23 @@ async function checkAndAutoStartBackend() {
         window._enginePollingInterval = setInterval(async () => {
             const isUp = await ping();
             if (isUp) {
-                clearInterval(window._enginePollingInterval);
-                window._enginePollingInterval = null;
-                badge.className = "server-badge online";
-                badgeText.textContent = "Backend Online";
-                if (notice) notice.style.display = "none";
-                refreshDownloadedFiles();
+                updateBadgeFromHealth(isUp);
+                if (isUp.ffmpeg) {
+                    clearInterval(window._enginePollingInterval);
+                    window._enginePollingInterval = null;
+                }
             } else {
                 // If native messaging host was just installed, trigger start
                 const hostRes = await sendNativeHostMessage({ action: "start" });
                 if (hostRes) {
                     await new Promise((r) => setTimeout(r, 1000));
-                    if (await ping()) {
-                        clearInterval(window._enginePollingInterval);
-                        window._enginePollingInterval = null;
-                        badge.className = "server-badge online";
-                        badgeText.textContent = "Backend Online";
-                        if (notice) notice.style.display = "none";
-                        refreshDownloadedFiles();
+                    const nextUp = await ping();
+                    if (nextUp) {
+                        updateBadgeFromHealth(nextUp);
+                        if (nextUp.ffmpeg) {
+                            clearInterval(window._enginePollingInterval);
+                            window._enginePollingInterval = null;
+                        }
                     }
                 }
             }
@@ -495,7 +537,179 @@ function extractCleanYouTubeUrl(rawUrl) {
     return rawUrl;
 }
 
-async function checkActiveYouTubeTab() {
+// --------------------------------------------------
+// MULTIPLATFORM URL DETECTION & BRANDING
+// --------------------------------------------------
+
+function detectPlatform(rawUrl) {
+    if (!rawUrl || typeof rawUrl !== "string") {
+        return { isSupported: false, platform: "generic", name: "Media", cleanUrl: "" };
+    }
+    
+    let url = rawUrl.trim();
+    let host = "";
+    let pathname = "";
+    try {
+        const parsed = new URL(url.startsWith("http") ? url : "https://" + url);
+        host = parsed.hostname.toLowerCase();
+        pathname = parsed.pathname;
+    } catch {
+        return { isSupported: false, platform: "generic", name: "Media", cleanUrl: url };
+    }
+
+    // 1. INSTAGRAM
+    if (host.includes("instagram.com")) {
+        const isReel = pathname.includes("/reel/") || pathname.includes("/reels/");
+        const isPost = pathname.includes("/p/");
+        const isStory = pathname.includes("/stories/");
+        
+        let cleanUrl = url;
+        const match = pathname.match(/\/(reel|reels|p)\/([a-zA-Z0-9_-]+)/i);
+        if (match) {
+            cleanUrl = `https://www.instagram.com/${match[1]}/${match[2]}/`;
+        }
+
+        return {
+            isSupported: true,
+            platform: "instagram",
+            name: "Instagram",
+            mediaType: isReel ? "Reel" : (isPost ? "Post" : "Video"),
+            tagText: isReel ? "NOW WATCHING INSTAGRAM REEL" : "NOW WATCHING ON INSTAGRAM",
+            buttonText: isReel ? "⬇ DOWNLOAD REEL" : "⬇ DOWNLOAD INSTAGRAM VIDEO",
+            cleanUrl: cleanUrl,
+            iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="5" ry="5"></rect><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"></path><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"></line></svg>`
+        };
+    }
+
+    // 2. X / TWITTER
+    if (host.includes("x.com") || host.includes("twitter.com")) {
+        let cleanUrl = url;
+        const match = pathname.match(/\/[^/]+\/status\/(\d+)/i);
+        if (match) {
+            cleanUrl = `https://x.com/i/status/${match[1]}`;
+        }
+        return {
+            isSupported: true,
+            platform: "x",
+            name: "X (Twitter)",
+            mediaType: "X Video",
+            tagText: "NOW WATCHING ON X",
+            buttonText: "⬇ DOWNLOAD X VIDEO",
+            cleanUrl: cleanUrl,
+            iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>`
+        };
+    }
+
+    // 3. REDDIT
+    if (host.includes("reddit.com") || host.includes("redd.it")) {
+        return {
+            isSupported: true,
+            platform: "reddit",
+            name: "Reddit",
+            mediaType: "Reddit Clip",
+            tagText: "NOW WATCHING ON REDDIT",
+            buttonText: "⬇ DOWNLOAD REDDIT CLIP",
+            cleanUrl: url.split("?")[0],
+            iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0zm5.01 4.744c.688 0 1.25.56 1.25 1.249a1.25 1.25 0 0 1-2.498.056l-2.597-.547-.8 3.747c1.824.07 3.48.632 4.674 1.488.308-.309.73-.491 1.207-.491.968 0 1.754.786 1.754 1.754 0 .716-.435 1.333-1.01 1.614a3.111 3.111 0 0 1 .042.52c0 2.694-3.13 4.87-7.004 4.87-3.874 0-7.004-2.176-7.004-4.87 0-.183.015-.366.043-.534A1.748 1.748 0 0 1 4.028 12c0-.968.786-1.754 1.754-1.754.463 0 .898.196 1.207.49 1.207-.883 2.878-1.43 4.744-1.487l.885-4.182a.342.342 0 0 1 .14-.197.35.35 0 0 1 .238-.042l2.906.617a1.214 1.214 0 0 1 1.108-.703zM9.25 12C8.56 12 8 12.56 8 13.25c0 .688.56 1.25 1.25 1.25.688 0 1.25-.56 1.25-1.25 0-.688-.56-1.25-1.25-1.25zm5.5 0c-.688 0-1.25.56-1.25 1.25 0 .688.56 1.25 1.25 1.25.688 0 1.25-.56 1.25-1.25 0-.688-.56-1.25-1.25-1.25zm-5.465 4.41c-.134.135-.134.354 0 .488.948.949 2.518 1.05 2.715 1.05.2 0 1.77-.101 2.715-1.05a.345.345 0 0 0 0-.488.345.345 0 0 0-.488 0c-.68.68-1.782.825-2.227.825-.445 0-1.547-.145-2.227-.825a.345.345 0 0 0-.488 0z"/></svg>`
+        };
+    }
+
+    // 4. TIKTOK
+    if (host.includes("tiktok.com")) {
+        return {
+            isSupported: true,
+            platform: "tiktok",
+            name: "TikTok",
+            mediaType: "TikTok",
+            tagText: "NOW WATCHING ON TIKTOK",
+            buttonText: "⬇ DOWNLOAD TIKTOK",
+            cleanUrl: url.split("?")[0],
+            iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64c.298 0 .59.043.87.12V9.4a6.33 6.33 0 0 0-1-.08A6.34 6.34 0 0 0 3 15.66a6.34 6.34 0 0 0 10.82 4.48 6.3 6.3 0 0 0 1.87-4.47V8.58a8.3 8.3 0 0 0 3.9 1.01V6.69z"/></svg>`
+        };
+    }
+
+    // 5. YOUTUBE
+    if (host.includes("youtube.com") || host.includes("youtu.be")) {
+        const isShort = pathname.includes("/shorts/");
+        const cleanUrl = extractCleanYouTubeUrl(url) || url;
+        return {
+            isSupported: true,
+            platform: "youtube",
+            name: "YouTube",
+            mediaType: isShort ? "Short" : "Video",
+            tagText: isShort ? "NOW WATCHING YOUTUBE SHORT" : "NOW WATCHING ON YOUTUBE",
+            buttonText: isShort ? "⬇ DOWNLOAD SHORT" : "⬇ DOWNLOAD THIS VIDEO",
+            cleanUrl: cleanUrl,
+            iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="currentColor"><path d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"/></svg>`
+        };
+    }
+
+    // 6. OTHER SUPPORTED MEDIA PLATFORMS (Facebook, Threads, Vimeo, Twitch)
+    const otherMediaHosts = ["facebook.com", "fb.watch", "threads.net", "vimeo.com", "twitch.tv", "dailymotion.com"];
+    if (otherMediaHosts.some((h) => host.includes(h))) {
+        const domainName = host.replace(/^www\./, "").split(".")[0];
+        const capName = domainName.charAt(0).toUpperCase() + domainName.slice(1);
+        return {
+            isSupported: true,
+            platform: "generic",
+            name: capName,
+            mediaType: "Video",
+            tagText: `NOW BROWSING ON ${capName.toUpperCase()}`,
+            buttonText: `⬇ DOWNLOAD ${capName.toUpperCase()} VIDEO`,
+            cleanUrl: url,
+            iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`
+        };
+    }
+
+    return {
+        isSupported: false,
+        platform: "generic",
+        name: "Web Media",
+        mediaType: "Video",
+        tagText: "MEDIA DETECTED",
+        buttonText: "⬇ DOWNLOAD VIDEO",
+        cleanUrl: url,
+        iconSvg: `<svg class="platform-tag-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>`
+    };
+}
+
+// Inspect active tab DOM for playing HTML5 video stream (especially useful on Instagram)
+async function extractActiveTabMedia(tab) {
+    if (!tab || !tab.id) return null;
+    if (ext && ext.scripting && typeof ext.scripting.executeScript === "function") {
+        try {
+            const results = await ext.scripting.executeScript({
+                target: { tabId: tab.id },
+                func: () => {
+                    try {
+                        const videos = Array.from(document.querySelectorAll("video"));
+                        for (const v of videos) {
+                            const src = v.currentSrc || v.src;
+                            if (src && src.startsWith("http")) {
+                                return { directMediaUrl: src, poster: v.poster || "" };
+                            }
+                        }
+                        for (const v of videos) {
+                            const source = v.querySelector("source");
+                            if (source && source.src && source.src.startsWith("http")) {
+                                return { directMediaUrl: source.src, poster: v.poster || "" };
+                            }
+                        }
+                    } catch {}
+                    return null;
+                }
+            });
+            if (results && results[0] && results[0].result) {
+                return results[0].result;
+            }
+        } catch (e) {
+            console.log("[ShortBot] Tab media extraction skipped:", e);
+        }
+    }
+    return null;
+}
+
+async function checkActiveMediaTab() {
     if (!ext || !ext.tabs?.query) {
         return;
     }
@@ -511,13 +725,8 @@ async function checkActiveYouTubeTab() {
         const tab = tabs && tabs[0];
         if (!tab || !tab.url) return;
 
-        const isYouTube = tab.url.includes("youtube.com/watch") || 
-                          tab.url.includes("youtube.com/shorts/") ||
-                          tab.url.includes("youtu.be/") ||
-                          tab.url.includes("youtube.com/live/");
-        if (!isYouTube) return;
-
         const card = document.getElementById("activeVideoCard");
+        const tagEl = document.getElementById("activeCardTag");
         const titleEl = document.getElementById("activeVideoTitle");
         const btn = document.getElementById("downloadActiveButton");
         const statusEl = document.getElementById("activeVideoStatus");
@@ -525,6 +734,31 @@ async function checkActiveYouTubeTab() {
         const watermarkLabel = document.getElementById("activeWatermarkLabel");
 
         if (!card || !titleEl || !btn || !statusEl) return;
+
+        const platformInfo = detectPlatform(tab.url);
+        
+        // Also inspect page DOM for embedded HTML5 videos (e.g., Instagram Reels or custom web players)
+        let mediaDom = null;
+        if (platformInfo.isSupported || tab.url.startsWith("http")) {
+            mediaDom = await extractActiveTabMedia(tab);
+        }
+
+        // If the platform isn't directly recognized and there is no video tag in DOM, keep hidden
+        if (!platformInfo.isSupported && !mediaDom) {
+            card.style.display = "none";
+            return;
+        }
+
+        // Apply platform dynamic accent to Card and Button
+        const activePlatform = platformInfo.platform;
+        card.setAttribute("data-platform", activePlatform);
+        btn.setAttribute("data-platform", activePlatform);
+
+        if (tagEl) {
+            tagEl.innerHTML = `<span class="platform-tag-badge">${platformInfo.iconSvg} <span>${platformInfo.tagText}</span></span>`;
+        }
+
+        btn.innerHTML = platformInfo.buttonText;
 
         function updateWatermarkCheckboxUI() {
             if (!watermarkCheckbox) return;
@@ -565,12 +799,18 @@ async function checkActiveYouTubeTab() {
             watermarkInput.addEventListener("input", updateWatermarkCheckboxUI);
         }
 
-        const cleanTitle = (tab.title || "YouTube Video")
+        // Clean page title for a crisp filename and card header
+        const cleanTitle = (tab.title || `${platformInfo.name} Video`)
             .replace(/ - YouTube$/, "")
+            .replace(/ on Instagram:?.*$/i, "")
+            .replace(/ \/ X$/i, "")
+            .replace(/ : r\/[a-zA-Z0-9_]+$/i, "")
+            .replace(/ \| TikTok$/i, "")
             .replace(/\(\d+\)\s*/, "")
             .trim();
 
-        const targetUrl = extractCleanYouTubeUrl(tab.url) || tab.url;
+        const targetUrl = platformInfo.cleanUrl || tab.url;
+        const directMediaUrl = mediaDom?.directMediaUrl || null;
 
         titleEl.textContent = cleanTitle;
         card.style.display = "block";
@@ -615,7 +855,7 @@ async function checkActiveYouTubeTab() {
 
                 if (!isAlive) {
                     btn.disabled = false;
-                    btn.textContent = "⬇ DOWNLOAD THIS VIDEO";
+                    btn.innerHTML = platformInfo.buttonText;
                     statusEl.innerHTML = 'ShortBot backend is offline. Run <code style="background:rgba(255,255,255,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;">python backend.py</code> in terminal, or click the status badge above to retry.';
                     statusEl.className = "active-video-status error";
                     activeProgress.fail("ShortBot backend is offline");
@@ -624,7 +864,7 @@ async function checkActiveYouTubeTab() {
 
                 // Step 2: Request download with real-time progress tracking
                 btn.textContent = "DOWNLOADING...";
-                statusEl.textContent = "Downloading & processing video with yt-dlp...";
+                statusEl.textContent = `Downloading & processing ${platformInfo.name} ${platformInfo.mediaType}...`;
                 statusEl.className = "active-video-status pending";
 
                 const applyWm = watermarkCheckbox ? watermarkCheckbox.checked : false;
@@ -632,7 +872,7 @@ async function checkActiveYouTubeTab() {
 
                 const detailMsg = watermark 
                     ? `Downloading with watermark '${watermark}'...` 
-                    : "Connecting to YouTube stream...";
+                    : `Connecting to ${platformInfo.name} stream...`;
                 activeProgress.update(15, "Starting download...", detailMsg);
                 activeProgress.pollTask(taskId);
 
@@ -643,6 +883,7 @@ async function checkActiveYouTubeTab() {
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({
                             url: targetUrl,
+                            direct_media_url: directMediaUrl,
                             watermark: watermark,
                             server_only: false,
                             task_id: taskId
@@ -660,7 +901,14 @@ async function checkActiveYouTubeTab() {
                 activeProgress.update(98, "Saving file...", "Receiving media stream...");
                 const blob = await res.blob();
                 const blobUrl = URL.createObjectURL(blob);
-                const safeName = (cleanTitle.replace(/[^a-zA-Z0-9_\-\s]/g, "").trim().slice(0, 40) || "youtube_video") + ".mp4";
+
+                const prefix = activePlatform === "instagram" ? "instagram_reel" 
+                             : activePlatform === "x" ? "x_video"
+                             : activePlatform === "reddit" ? "reddit_clip"
+                             : activePlatform === "tiktok" ? "tiktok_video"
+                             : "video";
+
+                const safeName = (cleanTitle.replace(/[^a-zA-Z0-9_\-\s]/g, "").trim().slice(0, 40) || prefix) + ".mp4";
 
                 // Step 3: Save file (native extension or browser API)
                 await saveVideoFile(blob, safeName, false);
@@ -682,7 +930,7 @@ async function checkActiveYouTubeTab() {
                 console.error("Active download error:", err);
                 activeProgress.fail(err.message);
                 btn.disabled = false;
-                btn.textContent = "⬇ DOWNLOAD THIS VIDEO";
+                btn.innerHTML = platformInfo.buttonText;
                 statusEl.textContent = "Download failed: " + err.message;
                 statusEl.className = "active-video-status error";
             }
@@ -691,6 +939,9 @@ async function checkActiveYouTubeTab() {
         console.log("Could not check active tab:", e);
     }
 }
+
+// Backward-compatibility alias
+const checkActiveYouTubeTab = checkActiveMediaTab;
 
 function triggerAnchorDownload(url, filename) {
     const a = document.createElement("a");
@@ -1138,23 +1389,41 @@ function setupDirectDownloadSection() {
         detail: "directProgressDetail"
     });
 
+    // Real-time dynamic accent styling as user types or pastes URLs
+    function updateDirectButtonAccent() {
+        const rawUrl = directInput.value.trim();
+        const plat = detectPlatform(rawUrl);
+        if (plat.isSupported) {
+            directBtn.setAttribute("data-platform", plat.platform);
+            directBtn.textContent = plat.buttonText;
+        } else {
+            directBtn.removeAttribute("data-platform");
+            directBtn.textContent = "⬇ DOWNLOAD";
+        }
+    }
+
+    directInput.addEventListener("input", updateDirectButtonAccent);
+    directInput.addEventListener("paste", () => {
+        setTimeout(updateDirectButtonAccent, 50);
+    });
+
     async function handleDirectDownload() {
         const rawUrl = directInput.value.trim();
         if (!rawUrl) {
-            statusEl.textContent = "Please enter or paste a YouTube video or Shorts link.";
+            statusEl.textContent = "Please enter or paste a video link (Instagram, YouTube, X, Reddit, TikTok...).";
             statusEl.className = "direct-video-status error";
             directInput.focus();
             return;
         }
 
-        const isYouTube = rawUrl.includes("youtube.com") || rawUrl.includes("youtu.be");
-        if (!isYouTube) {
-            statusEl.textContent = "Please enter a valid YouTube or Shorts URL (e.g. https://www.youtube.com/shorts/...).";
+        const plat = detectPlatform(rawUrl);
+        if (!plat.isSupported && !rawUrl.startsWith("http")) {
+            statusEl.textContent = "Please enter a valid video link (Instagram Reel, YouTube, X, Reddit, TikTok...).";
             statusEl.className = "direct-video-status error";
             return;
         }
 
-        const cleanUrl = extractCleanYouTubeUrl(rawUrl) || rawUrl;
+        const cleanUrl = plat.cleanUrl || rawUrl;
         const taskId = "direct_dl_" + Date.now();
 
         directBtn.disabled = true;
@@ -1186,7 +1455,7 @@ function setupDirectDownloadSection() {
 
             if (!isAlive) {
                 directBtn.disabled = false;
-                directBtn.textContent = "⬇ DOWNLOAD";
+                directBtn.textContent = plat.isSupported ? plat.buttonText : "⬇ DOWNLOAD";
                 statusEl.innerHTML = 'ShortBot backend is offline. Run <code style="background:rgba(255,255,255,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;">python backend.py</code> in terminal, or click the status badge above to retry.';
                 statusEl.className = "direct-video-status error";
                 directProgress.fail("ShortBot backend is offline");
@@ -1195,7 +1464,7 @@ function setupDirectDownloadSection() {
 
             // Step 2: Request download with real-time progress tracking
             directBtn.textContent = "DOWNLOADING...";
-            statusEl.textContent = "Downloading & processing video with yt-dlp...";
+            statusEl.textContent = `Downloading & processing ${plat.name} ${plat.mediaType}...`;
             statusEl.className = "direct-video-status pending";
 
             const applyWm = watermarkCheckbox ? watermarkCheckbox.checked : false;
@@ -1203,7 +1472,7 @@ function setupDirectDownloadSection() {
 
             const detailMsg = watermark 
                 ? `Downloading with watermark '${watermark}'...` 
-                : "Connecting to YouTube stream...";
+                : `Connecting to ${plat.name} stream...`;
             directProgress.update(15, "Starting download...", detailMsg);
             directProgress.pollTask(taskId);
 
@@ -1233,11 +1502,16 @@ function setupDirectDownloadSection() {
             const blobUrl = URL.createObjectURL(blob);
             
             // Extract a filename hint
-            let safeName = "youtube_video.mp4";
+            const prefix = plat.platform === "instagram" ? "instagram_reel" 
+                         : plat.platform === "x" ? "x_video"
+                         : plat.platform === "reddit" ? "reddit_clip"
+                         : plat.platform === "tiktok" ? "tiktok_video"
+                         : "video";
+            let safeName = `${prefix}_${Date.now()}.mp4`;
             try {
                 const urlObj = new URL(cleanUrl);
                 const vidId = urlObj.searchParams.get("v") || urlObj.pathname.split("/").filter(Boolean).pop();
-                if (vidId) safeName = `short_${vidId}.mp4`;
+                if (vidId) safeName = `${prefix}_${vidId.slice(0, 20)}.mp4`;
             } catch {}
 
             // Save file (native extension or browser API)
@@ -1260,7 +1534,7 @@ function setupDirectDownloadSection() {
             console.error("Direct download error:", err);
             directProgress.fail(err.message);
             directBtn.disabled = false;
-            directBtn.textContent = "⬇ DOWNLOAD";
+            directBtn.textContent = plat.isSupported ? plat.buttonText : "⬇ DOWNLOAD";
             statusEl.textContent = "Download failed: " + err.message;
             statusEl.className = "direct-video-status error";
         }
@@ -2864,7 +3138,7 @@ async function initApp() {
         if (watermarkInput) watermarkInput.addEventListener("input", saveAppState);
 
         checkAndAutoStartBackend();
-        checkActiveYouTubeTab();
+        checkActiveMediaTab();
         setupDirectDownloadSection();
         setupCompilationModalListeners();
         await restoreAppState();

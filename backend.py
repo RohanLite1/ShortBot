@@ -45,6 +45,9 @@ import shutil
 import threading
 import time
 import re
+import urllib.request
+import zipfile
+import io
 import yt_dlp
 
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
@@ -107,7 +110,7 @@ def get_video_duration(file_path):
 def probe_media_info(file_path):
     """Probes media duration and checks if audio stream exists."""
     try:
-        probe = FFPROBE_PATH or shutil.which("ffprobe") or "ffprobe"
+        probe = get_ffprobe_path() or shutil.which("ffprobe") or "ffprobe"
         cmd = [
             probe,
             "-v", "error",
@@ -144,22 +147,55 @@ def add_cors_headers(response):
     return response
 
 
+# ============================================================
+# FFMPEG & MEDIA ENGINE AUTO-PROVISIONING
+# ============================================================
 
 def find_ffmpeg_binary(name):
-    # 1. Check local bin/
+    # 1. If frozen executable, check EXE_DIR/bin and EXE_DIR
+    if getattr(sys, "frozen", False):
+        exe_real_dir = os.path.dirname(sys.executable)
+        exe_dir = getattr(sys, "_MEIPASS", None)
+        for d in (exe_real_dir, exe_dir):
+            if d:
+                p = os.path.join(d, "bin", f"{name}.exe")
+                if os.path.isfile(p):
+                    return p
+                p = os.path.join(d, f"{name}.exe")
+                if os.path.isfile(p):
+                    return p
+
+    # 2. Check local bin/
     p = os.path.join(BASE_DIR, "bin", f"{name}.exe")
     if os.path.isfile(p):
         return p
-    # 2. Check local directory
+    # 3. Check local directory
     p = os.path.join(BASE_DIR, f"{name}.exe")
     if os.path.isfile(p):
         return p
-    # 3. Check system PATH
+
+    # 4. Check ShortBot installation directory in LocalAppData (%LOCALAPPDATA%\ShortBot\bin)
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        p = os.path.join(local_app_data, "ShortBot", "bin", f"{name}.exe")
+        if os.path.isfile(p):
+            return p
+        p = os.path.join(local_app_data, "ShortBot", f"{name}.exe")
+        if os.path.isfile(p):
+            return p
+
+    # 5. Check user home .shortbot/bin
+    user_home = os.path.expanduser("~")
+    p = os.path.join(user_home, ".shortbot", "bin", f"{name}.exe")
+    if os.path.isfile(p):
+        return p
+
+    # 6. Check system PATH
     found = shutil.which(name)
     if found:
         return found
-    # 4. Check WinGet packages directory in LocalAppData
-    local_app_data = os.environ.get("LOCALAPPDATA", "")
+
+    # 7. Check WinGet packages directory in LocalAppData
     if local_app_data:
         winget_pkgs = os.path.join(local_app_data, "Microsoft", "WinGet", "Packages")
         if os.path.isdir(winget_pkgs):
@@ -167,8 +203,9 @@ def find_ffmpeg_binary(name):
                 for f in files:
                     if f.lower() == f"{name.lower()}.exe":
                         return os.path.join(root, f)
-    # 5. Common installation locations
-    for common_dir in (r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin"):
+
+    # 8. Common installation locations
+    for common_dir in (r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin", r"C:\Program Files (x86)\ffmpeg\bin"):
         p = os.path.join(common_dir, f"{name}.exe")
         if os.path.isfile(p):
             return p
@@ -183,6 +220,220 @@ if FFMPEG_PATH:
     print("FFprobe found:", FFPROBE_PATH)
     print()
 
+def get_ffmpeg_path():
+    global FFMPEG_PATH
+    if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+        return FFMPEG_PATH
+    FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+    return FFMPEG_PATH
+
+def get_ffprobe_path():
+    global FFPROBE_PATH
+    if FFPROBE_PATH and os.path.isfile(FFPROBE_PATH):
+        return FFPROBE_PATH
+    FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
+    return FFPROBE_PATH
+
+_ffmpeg_download_lock = threading.Lock()
+_ffmpeg_download_thread = None
+_ffmpeg_download_status = {
+    "state": "idle",       # "idle", "downloading", "completed", "error"
+    "percent": 0,
+    "detail": "",
+    "error": None
+}
+
+def get_target_bin_dir():
+    candidates = []
+    if getattr(sys, "frozen", False):
+        exe_real_dir = os.path.dirname(sys.executable)
+        candidates.append(os.path.join(exe_real_dir, "bin"))
+    candidates.append(os.path.join(BASE_DIR, "bin"))
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        candidates.append(os.path.join(local_app_data, "ShortBot", "bin"))
+    candidates.append(os.path.join(os.path.expanduser("~"), ".shortbot", "bin"))
+
+    for c in candidates:
+        if not c:
+            continue
+        try:
+            os.makedirs(c, exist_ok=True)
+            test_file = os.path.join(c, ".write_test")
+            with open(test_file, "w") as f:
+                f.write("ok")
+            os.remove(test_file)
+            return c
+        except Exception:
+            continue
+    return os.path.join(BASE_DIR, "bin")
+
+def _download_and_extract_file(url, target_file, expected_name, on_progress=None):
+    """Downloads a zip from url and extracts expected_name into target_file."""
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ShortBot/1.1"}
+    )
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        total = int(resp.headers.get("Content-Length", 0))
+        chunks = []
+        downloaded = 0
+        while True:
+            chunk = resp.read(131072)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            downloaded += len(chunk)
+            if on_progress and total > 0:
+                pct = min(99, int((downloaded / total) * 100))
+                on_progress(pct)
+        raw_data = b"".join(chunks)
+        with zipfile.ZipFile(io.BytesIO(raw_data)) as z:
+            for info in z.infolist():
+                if os.path.basename(info.filename).lower() == expected_name.lower():
+                    with z.open(info) as src, open(target_file, "wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    return True
+    return False
+
+def _do_download_ffmpeg():
+    global FFMPEG_PATH, FFPROBE_PATH
+    target_dir = get_target_bin_dir()
+    os.makedirs(target_dir, exist_ok=True)
+    target_ffmpeg = os.path.join(target_dir, "ffmpeg.exe")
+    target_ffprobe = os.path.join(target_dir, "ffprobe.exe")
+
+    _ffmpeg_download_status["state"] = "downloading"
+    _ffmpeg_download_status["percent"] = 5
+    _ffmpeg_download_status["detail"] = "Connecting to media engine repository..."
+
+    print()
+    print("=" * 60)
+    print(f"[ShortBot] Auto-provisioning portable FFmpeg into: {target_dir}")
+    print("=" * 60)
+
+    # 1. Download ffmpeg.exe if missing
+    if not (os.path.isfile(target_ffmpeg) and os.path.getsize(target_ffmpeg) > 1000000):
+        try:
+            _ffmpeg_download_status["detail"] = "Downloading portable FFmpeg (0%)..."
+            def progress_ffmpeg(pct):
+                _ffmpeg_download_status["percent"] = int(pct * 0.7)  # 0-70%
+                _ffmpeg_download_status["detail"] = f"Downloading portable FFmpeg ({pct}%)..."
+
+            url = "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v6.1/ffmpeg-6.1-win-64.zip"
+            success = _download_and_extract_file(url, target_ffmpeg, "ffmpeg.exe", progress_ffmpeg)
+            if not success or not os.path.isfile(target_ffmpeg):
+                raise RuntimeError("Failed to extract ffmpeg.exe from primary mirror.")
+        except Exception as e:
+            print("[ShortBot] Primary mirror failed for ffmpeg, trying Gyan essentials fallback...", e)
+            try:
+                url_gyan = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+                _download_and_extract_file(url_gyan, target_ffmpeg, "ffmpeg.exe")
+            except Exception as e2:
+                print("[ShortBot] Gyan mirror also failed:", e2)
+
+    # 2. Download ffprobe.exe if missing
+    if not (os.path.isfile(target_ffprobe) and os.path.getsize(target_ffprobe) > 1000000):
+        try:
+            _ffmpeg_download_status["detail"] = "Downloading portable FFprobe (0%)..."
+            def progress_ffprobe(pct):
+                _ffmpeg_download_status["percent"] = 70 + int(pct * 0.28)  # 70-98%
+                _ffmpeg_download_status["detail"] = f"Downloading portable FFprobe ({pct}%)..."
+
+            url_probe = "https://github.com/ffbinaries/ffbinaries-prebuilt/releases/download/v6.1/ffprobe-6.1-win-64.zip"
+            _download_and_extract_file(url_probe, target_ffprobe, "ffprobe.exe", progress_ffprobe)
+        except Exception as e:
+            print("[ShortBot] ffprobe download warning:", e)
+
+    # Re-evaluate
+    FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+    FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
+
+    if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+        _ffmpeg_download_status["state"] = "completed"
+        _ffmpeg_download_status["percent"] = 100
+        _ffmpeg_download_status["detail"] = "FFmpeg ready!"
+        print("[ShortBot] FFmpeg successfully installed and active:", FFMPEG_PATH)
+        return True
+    else:
+        # Fallback to WinGet if available
+        try:
+            print("[ShortBot] Attempting winget fallback installation...")
+            subprocess.run(
+                ["winget", "install", "--id", "Gyan.FFmpeg", "--accept-source-agreements", "--accept-package-agreements", "--silent"],
+                capture_output=True,
+                timeout=120,
+                **get_no_window_kwargs()
+            )
+            FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+            FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
+            if FFMPEG_PATH:
+                _ffmpeg_download_status["state"] = "completed"
+                _ffmpeg_download_status["percent"] = 100
+                _ffmpeg_download_status["detail"] = "FFmpeg ready!"
+                return True
+        except Exception:
+            pass
+
+        _ffmpeg_download_status["state"] = "error"
+        _ffmpeg_download_status["error"] = "Could not automatically download FFmpeg. Please check your internet connection."
+        return False
+
+def start_ffmpeg_download_in_background():
+    global _ffmpeg_download_thread
+    with _ffmpeg_download_lock:
+        if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+            return
+        if _ffmpeg_download_status.get("state") == "downloading":
+            return
+        _ffmpeg_download_status["state"] = "downloading"
+        _ffmpeg_download_status["percent"] = 5
+        _ffmpeg_download_thread = threading.Thread(target=_do_download_ffmpeg, daemon=True)
+        _ffmpeg_download_thread.start()
+
+def ensure_ffmpeg(task_id=None, timeout=90):
+    global FFMPEG_PATH, FFPROBE_PATH
+    if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+        return FFMPEG_PATH
+
+    FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+    FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
+    if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+        return FFMPEG_PATH
+
+    start_ffmpeg_download_in_background()
+
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if FFMPEG_PATH and os.path.isfile(FFMPEG_PATH):
+            return FFMPEG_PATH
+
+        st = _ffmpeg_download_status.get("state")
+        pct = _ffmpeg_download_status.get("percent", 0)
+        detail = _ffmpeg_download_status.get("detail", "Downloading FFmpeg...")
+
+        if st == "completed":
+            FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+            FFPROBE_PATH = find_ffmpeg_binary("ffprobe")
+            return FFMPEG_PATH
+        if st == "error":
+            break
+
+        if task_id:
+            # Map download 0-100% to progress bar 5-30%
+            task_pct = min(30.0, 5.0 + (pct * 0.25))
+            update_task_progress(
+                task_id,
+                round(task_pct, 1),
+                "Setting up media processing engine...",
+                detail=detail
+            )
+
+        time.sleep(0.5)
+
+    FFMPEG_PATH = find_ffmpeg_binary("ffmpeg")
+    return FFMPEG_PATH
+
 _FAST_ENCODER_OPTS = None
 
 def get_fast_h264_encoder():
@@ -192,7 +443,7 @@ def get_fast_h264_encoder():
     if _FAST_ENCODER_OPTS is not None:
         return _FAST_ENCODER_OPTS
 
-    ffmpeg = FFMPEG_PATH or "ffmpeg"
+    ffmpeg = get_ffmpeg_path() or "ffmpeg"
     try:
         test_cmd = [
             ffmpeg,
@@ -228,7 +479,7 @@ def get_fast_h264_encoder():
 
 
 # ============================================================
-# HEALTH CHECK
+# HEALTH CHECK & MEDIA ENGINE STATUS
 # ============================================================
 
 @app.route("/health", methods=["GET", "OPTIONS"])
@@ -237,12 +488,39 @@ def health():
         return ("", 204)
     from ai_engine import get_gemini_api_key
     gemini_key = get_gemini_api_key()
+    ffmpeg_p = get_ffmpeg_path()
+    dl_status = _ffmpeg_download_status
+    state = "ready" if ffmpeg_p else dl_status.get("state", "missing")
     return jsonify({
         "success": True,
         "status": "online",
-        "ffmpeg": bool(FFMPEG_PATH),
+        "ffmpeg": bool(ffmpeg_p),
+        "ffmpeg_status": state,
+        "ffmpeg_progress": dl_status.get("percent", 0),
+        "ffmpeg_path": ffmpeg_p or "",
         "ai_mode": "gemini_cloud" if gemini_key else "local_nlp",
         "has_gemini_key": bool(gemini_key)
+    })
+
+
+@app.route("/ffmpeg/install", methods=["GET", "POST", "OPTIONS"])
+def install_ffmpeg_route():
+    if request.method == "OPTIONS":
+        return ("", 204)
+    ffmpeg_p = get_ffmpeg_path()
+    if ffmpeg_p:
+        return jsonify({
+            "success": True,
+            "status": "ready",
+            "ffmpeg": True,
+            "path": ffmpeg_p
+        })
+    start_ffmpeg_download_in_background()
+    return jsonify({
+        "success": True,
+        "status": _ffmpeg_download_status.get("state", "downloading"),
+        "percent": _ffmpeg_download_status.get("percent", 0),
+        "ffmpeg": False
     })
 
 
@@ -394,8 +672,9 @@ def apply_watermark(
         )
 
         encoder_args = get_fast_h264_encoder()
+        ffmpeg_bin = get_ffmpeg_path() or "ffmpeg"
         command = [
-            FFMPEG_PATH,
+            ffmpeg_bin,
             "-y",
             "-i",
             input_file,
@@ -512,6 +791,7 @@ def download():
     # reliable. Existing callers keep the original behavior.
     server_only = bool(data.get("server_only", False))
     task_id = str(data.get("task_id", "")).strip() or None
+    direct_media_url = str(data.get("direct_media_url", "")).strip() or None
 
     if not video_url:
 
@@ -531,14 +811,16 @@ def download():
         task_id,
         5.0,
         "Starting download...",
-        detail="Connecting to YouTube..."
+        detail="Connecting to stream..."
     )
 
     print()
     print("=" * 60)
-    print("DOWNLOADING SHORT")
+    print("DOWNLOADING MEDIA")
     print("=" * 60)
     print("URL:", video_url)
+    if direct_media_url:
+        print("Direct Media URL:", direct_media_url[:90] + "...")
 
     if watermark:
         print("Watermark:", watermark)
@@ -547,18 +829,37 @@ def download():
 
     print()
 
-    if not FFMPEG_PATH:
-
-        update_task_progress(task_id, 0.0, "Failed", detail="FFmpeg not found", status="error")
-        return jsonify({
-            "success": False,
-            "error": "FFmpeg was not found."
-        }), 500
+    # Ensure FFmpeg is available; auto-provision in background/on-demand if needed
+    ffmpeg_bin = ensure_ffmpeg(task_id=task_id)
+    if not ffmpeg_bin:
+        if watermark:
+            update_task_progress(
+                task_id,
+                0.0,
+                "Failed",
+                detail="FFmpeg offline (needed for watermark)",
+                status="error"
+            )
+            return jsonify({
+                "success": False,
+                "error": "FFmpeg is offline or not installed. Please connect to the internet to complete automatic setup, or uncheck watermark."
+            }), 500
+        else:
+            print("[ShortBot] FFmpeg not found, falling back to pre-merged stream download...")
 
     def get_url_file_id(v_url):
         m = re.search(r"(?:shorts/|v=|youtu\.be/)([a-zA-Z0-9_-]{11})", v_url)
         if m:
             return m.group(1)
+        m_ig = re.search(r"instagram\.com/(?:reel|reels|p)/([a-zA-Z0-9_-]+)", v_url)
+        if m_ig:
+            return f"ig_{m_ig.group(1)}"
+        m_x = re.search(r"(?:twitter|x)\.com/[^/]+/status/(\d+)", v_url)
+        if m_x:
+            return f"x_{m_x.group(1)}"
+        m_red = re.search(r"reddit\.com/r/[^/]+/comments/([a-zA-Z0-9]+)", v_url)
+        if m_red:
+            return f"red_{m_red.group(1)}"
         import hashlib
         return hashlib.sha256(v_url.strip().encode("utf-8")).hexdigest()[:10]
 
@@ -591,16 +892,53 @@ def download():
     cookies_file = os.path.join(BASE_DIR, "cookies.txt")
     cookies_param = cookies_file if os.path.isfile(cookies_file) else None
 
-    # Client strategies to bypass YouTube 429 and bot verification challenges
-    client_strategies = [
-        "android,ios,web",
-        "android,ios",
-        "web,ios,android"
-    ]
+    is_youtube = ("youtube.com" in video_url.lower() or "youtu.be" in video_url.lower())
+    if is_youtube:
+        client_strategies = [
+            "android,ios,web",
+            "android,ios",
+            "web,ios,android"
+        ]
+    else:
+        client_strategies = ["default"]
 
     success = False
     last_error_details = ""
     scale = 0.70 if watermark else 0.90
+
+    # 1. Attempt direct media stream download first if provided (bypasses login walls for active browser tabs)
+    if direct_media_url and direct_media_url.startswith("http"):
+        try:
+            print(f"[ShortBot] Direct media stream detected: {direct_media_url[:80]}...")
+            update_task_progress(task_id, 20.0, "Downloading media stream...", detail="Direct stream found")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Referer": video_url or "https://www.instagram.com/"
+            }
+            tmp_direct_file = os.path.join(DOWNLOAD_DIR, f"short_{file_id}.mp4")
+            with requests.get(direct_media_url, headers=headers, stream=True, timeout=35) as r:
+                r.raise_for_status()
+                total_len = int(r.headers.get("content-length", 0))
+                dl_bytes = 0
+                with open(tmp_direct_file, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 64):
+                        if chunk:
+                            f.write(chunk)
+                            dl_bytes += len(chunk)
+                            if total_len > 0:
+                                pct = min(85.0, 20.0 + (dl_bytes / total_len) * 65.0)
+                                update_task_progress(
+                                    task_id,
+                                    round(pct, 1),
+                                    f"Downloading stream ({int(dl_bytes * 100 / total_len)}%)...",
+                                    detail=f"{dl_bytes // 1024} KB / {total_len // 1024} KB"
+                                )
+            if os.path.isfile(tmp_direct_file) and os.path.getsize(tmp_direct_file) > 1000:
+                print(f"[ShortBot] Direct stream downloaded successfully ({dl_bytes} bytes)")
+                success = True
+        except Exception as direct_err:
+            print(f"[ShortBot] Direct stream download failed ({direct_err}), falling back to yt-dlp...")
+            success = False
 
     def ydl_progress_hook(d):
         status = d.get("status")
@@ -642,59 +980,75 @@ def download():
             )
 
     try:
-        for strat_idx, client_strat in enumerate(client_strategies):
-            if strat_idx > 0:
-                print(f"Retrying download with strategy {strat_idx + 1} ({client_strat})...")
-                update_task_progress(
-                    task_id,
-                    10.0,
-                    "Retrying download...",
-                    detail=f"Bypassing YouTube verification with {client_strat}..."
-                )
+        if not success:
+            for strat_idx, client_strat in enumerate(client_strategies):
+                if strat_idx > 0:
+                    print(f"Retrying download with strategy {strat_idx + 1} ({client_strat})...")
+                    update_task_progress(
+                        task_id,
+                        10.0,
+                        "Retrying download...",
+                        detail=f"Bypassing verification with {client_strat}..."
+                    )
 
-            print(f"Running yt-dlp in-process (strategy: {client_strat})...")
+                print(f"Running yt-dlp in-process (strategy: {client_strat})...")
 
-            ydl_opts = {
-                "outtmpl": output_template,
-                "format": "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bestvideo*+bestaudio/best",
-                "merge_output_format": "mp4",
-                "ffmpeg_location": FFMPEG_PATH,
-                "noplaylist": True,
-                "progress_hooks": [ydl_progress_hook],
-                "extractor_args": {
-                    "youtube": {
-                        "player_client": client_strat.split(",")
+                if ffmpeg_bin:
+                    format_spec = "bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bestvideo*+bestaudio/best"
+                    merge_fmt = "mp4"
+                else:
+                    format_spec = "b[ext=mp4]/b/bestvideo[ext=mp4]+bestaudio[ext=m4a]/best"
+                    merge_fmt = None
+
+                ydl_opts = {
+                    "outtmpl": output_template,
+                    "format": format_spec,
+                    "noplaylist": True,
+                    "progress_hooks": [ydl_progress_hook],
+                    "quiet": True,
+                    "no_warnings": True,
+                }
+                if is_youtube:
+                    ydl_opts["extractor_args"] = {
+                        "youtube": {
+                            "player_client": client_strat.split(",")
+                        }
                     }
-                },
-                "quiet": True,
-                "no_warnings": True,
-            }
-            if cookies_param:
-                ydl_opts["cookiefile"] = cookies_param
-            if node_path:
-                ydl_opts["js_runtimes"] = {"node": {"path": node_path}}
+                elif "instagram.com" in video_url.lower():
+                    ydl_opts["http_headers"] = {
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                        "Referer": "https://www.instagram.com/"
+                    }
+                if merge_fmt:
+                    ydl_opts["merge_output_format"] = merge_fmt
+                if ffmpeg_bin:
+                    ydl_opts["ffmpeg_location"] = ffmpeg_bin
+                if cookies_param:
+                    ydl_opts["cookiefile"] = cookies_param
+                if node_path:
+                    ydl_opts["js_runtimes"] = {"node": {"path": node_path}}
 
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([video_url])
-                success = True
-                break
-            except Exception as e:
-                last_error_details = str(e)
-                print(f"yt-dlp error: {e}")
-                is_bot_error = any(
-                    phrase in last_error_details
-                    for phrase in [
-                        "Sign in to confirm you’re not a bot",
-                        "Sign in to confirm you're not a bot",
-                        "HTTP Error 429",
-                        "429: Too Many Requests",
-                        "Missing required Visitor Data",
-                        "GVS PO Token"
-                    ]
-                )
-                if not is_bot_error:
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        ydl.download([video_url])
+                    success = True
                     break
+                except Exception as e:
+                    last_error_details = str(e)
+                    print(f"yt-dlp error: {e}")
+                    is_bot_error = any(
+                        phrase in last_error_details
+                        for phrase in [
+                            "Sign in to confirm you’re not a bot",
+                            "Sign in to confirm you're not a bot",
+                            "HTTP Error 429",
+                            "429: Too Many Requests",
+                            "Missing required Visitor Data",
+                            "GVS PO Token"
+                        ]
+                    )
+                    if not is_bot_error or not is_youtube:
+                        break
 
         if not success:
             update_task_progress(task_id, 0.0, "Download failed", detail=last_error_details[:200], status="error")
@@ -1053,23 +1407,21 @@ def compile_shorts():
     print("=" * 60)
     print()
 
-    if not FFMPEG_PATH:
-
-        return jsonify({
-            "success": False,
-            "error": "FFmpeg was not found."
-        }), 500
-
-    data = request.get_json(
-        silent=True
-    )
-
+    data = request.get_json(silent=True) or {}
     if not data:
-
         return jsonify({
             "success": False,
             "error": "Invalid request."
         }), 400
+
+    task_id = str(data.get("task_id", "")).strip() or None
+    ffmpeg_bin = ensure_ffmpeg(task_id=task_id)
+    if not ffmpeg_bin:
+        update_task_progress(task_id, 0.0, "Compilation failed", detail="FFmpeg offline or not installed", status="error")
+        return jsonify({
+            "success": False,
+            "error": "FFmpeg is offline or not installed. Please connect to the internet to complete automatic setup, or install FFmpeg."
+        }), 500
 
     files = data.get(
         "files",
@@ -1248,7 +1600,7 @@ def compile_shorts():
         encoder_args = get_fast_h264_encoder()
 
         command = [
-            FFMPEG_PATH,
+            ffmpeg_bin,
             "-y",
             *input_args,
             "-filter_complex", full_filter,
@@ -1444,6 +1796,10 @@ if __name__ == "__main__":
 
     print("Press CTRL+C to stop.")
     print()
+
+    if not get_ffmpeg_path():
+        print("[ShortBot] FFmpeg not found on startup. Initiating automatic background provisioning...")
+        start_ffmpeg_download_in_background()
 
     app.run(
         host="127.0.0.1",

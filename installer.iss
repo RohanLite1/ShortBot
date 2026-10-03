@@ -2,9 +2,9 @@
 ; Inno Setup 6+ script - 100% Native, No Batch Scripts Required
 
 #define MyAppName "ShortBot Companion Engine"
-#define MyAppVersion "1.1.1"
+#define MyAppVersion "1.1.2"
 #define MyAppPublisher "ShortBot"
-#define MyAppURL "https://github.com/bigmanrohan12/ShortBot"
+#define MyAppURL "https://github.com/RohanLite1/ShortBot"
 #define MyAppExeName "ShortBot-Engine.exe"
 
 #ifndef MyAppFlavor
@@ -65,6 +65,10 @@ Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\com.shortbot.backend"
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.json"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.json"; Flags: uninsdeletekey
 
+[Dirs]
+Name: "{app}\bin"; Permissions: users-full
+Name: "{app}\downloads"; Permissions: users-full
+
 [Code]
 // Dynamically write native messaging manifests, unblock files, and launch engine gracefully
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -89,6 +93,11 @@ begin
 
     // 3. Clear Mark of the Web (Zone.Identifier) on all installed files
     Exec('powershell.exe', '-NoProfile -NonInteractive -WindowStyle Hidden -Command "Get-ChildItem -LiteralPath ''' + AppDir + ''' -Recurse -Force | Unblock-File -ErrorAction SilentlyContinue"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+
+    #if MyAppFlavor == "Lite"
+    // For Lite flavor, attempt silent winget setup in background if available
+    Exec('cmd.exe', '/c winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements --silent', '', SW_HIDE, ewNoWait, ResultCode);
+    #endif
 
     // 4. Launch engine gracefully using ShellExec (does not throw fatal modal dialogs if blocked by system policy)
     ShellExec('open', AppDir + '\{#MyAppExeName}', '', '', SW_HIDE, ewNoWait, ResultCode);

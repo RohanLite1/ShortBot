@@ -419,6 +419,17 @@ header p {
     color: #f87171;
     text-transform: uppercase;
     margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.platform-tag-icon {
+    width: 14px;
+    height: 14px;
+    display: inline-block;
+    vertical-align: middle;
+    flex-shrink: 0;
 }
 
 .active-video-title {
@@ -441,26 +452,223 @@ header p {
     background: var(--accent-red);
     color: white;
     border: none;
-    padding: 9px 16px;
+    padding: 10px 18px;
     border-radius: 8px;
     font-family: var(--font-main);
     font-weight: 700;
     font-size: 14px;
     cursor: pointer;
-    transition: background 0.15s ease, transform 0.1s ease, box-shadow 0.2s ease;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
 }
 
 .btn-active-download:hover {
     background: var(--accent-red-hover);
     transform: translateY(-1px);
-    box-shadow: 0 4px 12px var(--accent-glow);
+    box-shadow: 0 4px 14px var(--accent-glow);
+}
+
+.btn-active-download:active {
+    transform: translateY(0);
 }
 
 .btn-active-download:disabled {
-    background: #475569;
+    background: #475569 !important;
+    border-color: transparent !important;
     cursor: not-allowed;
-    transform: none;
-    box-shadow: none;
+    transform: none !important;
+    box-shadow: none !important;
+    filter: none !important;
+}
+
+/* ============================================================ */
+/* MULTIPLATFORM DYNAMIC ACCENT COLORS                          */
+/* ============================================================ */
+
+/* INSTAGRAM ACCENTS (Iconic Sunset Gradient) */
+.active-video-card[data-platform="instagram"] {
+    border-left: 4px solid #e1306c;
+    box-shadow: 0 4px 24px rgba(225, 48, 108, 0.22), 0 0 1px rgba(225, 48, 108, 0.4);
+}
+.active-video-card[data-platform="instagram"] .active-card-tag {
+    color: #f77737;
+    text-shadow: 0 0 12px rgba(247, 119, 55, 0.35);
+}
+.active-video-card[data-platform="instagram"] .btn-active-download,
+.btn-active-download[data-platform="instagram"],
+.btn-direct-download[data-platform="instagram"] {
+    background: linear-gradient(45deg, #f09433 0%, #e6683c 25%, #dc2743 50%, #cc2366 75%, #bc1888 100%);
+    box-shadow: 0 4px 16px rgba(225, 48, 108, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.25);
+    color: #ffffff;
+    text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+.active-video-card[data-platform="instagram"] .btn-active-download:hover,
+.btn-active-download[data-platform="instagram"]:hover,
+.btn-direct-download[data-platform="instagram"]:hover {
+    background: linear-gradient(45deg, #f99f3e 0%, #f07447 25%, #e6324e 50%, #d82f72 75%, #c72494 100%);
+    box-shadow: 0 6px 24px rgba(225, 48, 108, 0.7);
+    filter: brightness(1.08);
+}
+.active-video-card[data-platform="instagram"] .active-watermark-toggle input[type="checkbox"]:checked + .active-checkbox-box {
+    background: #cc2366;
+    border-color: #cc2366;
+    box-shadow: 0 0 10px rgba(204, 35, 102, 0.5);
+}
+.active-video-card[data-platform="instagram"] .progress-fill {
+    background: linear-gradient(90deg, #f09433, #dc2743, #bc1888);
+}
+
+/* X / TWITTER ACCENTS (Sleek Monochrome & Electric Cyan) */
+.active-video-card[data-platform="x"],
+.active-video-card[data-platform="twitter"] {
+    border-left: 4px solid #1d9bf0;
+    box-shadow: 0 4px 22px rgba(29, 155, 240, 0.18);
+}
+.active-video-card[data-platform="x"] .active-card-tag,
+.active-video-card[data-platform="twitter"] .active-card-tag {
+    color: #1d9bf0;
+    text-shadow: 0 0 10px rgba(29, 155, 240, 0.35);
+}
+.active-video-card[data-platform="x"] .btn-active-download,
+.active-video-card[data-platform="twitter"] .btn-active-download,
+.btn-active-download[data-platform="x"],
+.btn-active-download[data-platform="twitter"],
+.btn-direct-download[data-platform="x"],
+.btn-direct-download[data-platform="twitter"] {
+    background: linear-gradient(135deg, #0e141a 0%, #172433 50%, #1d9bf0 100%);
+    border: 1.5px solid #1d9bf0;
+    box-shadow: 0 4px 16px rgba(29, 155, 240, 0.35);
+    color: #ffffff;
+}
+.active-video-card[data-platform="x"] .btn-active-download:hover,
+.active-video-card[data-platform="twitter"] .btn-active-download:hover,
+.btn-active-download[data-platform="x"]:hover,
+.btn-active-download[data-platform="twitter"]:hover,
+.btn-direct-download[data-platform="x"]:hover,
+.btn-direct-download[data-platform="twitter"]:hover {
+    background: linear-gradient(135deg, #1d9bf0 0%, #0c7abf 100%);
+    box-shadow: 0 6px 22px rgba(29, 155, 240, 0.55);
+    filter: brightness(1.05);
+}
+.active-video-card[data-platform="x"] .active-watermark-toggle input[type="checkbox"]:checked + .active-checkbox-box,
+.active-video-card[data-platform="twitter"] .active-watermark-toggle input[type="checkbox"]:checked + .active-checkbox-box {
+    background: #1d9bf0;
+    border-color: #1d9bf0;
+    box-shadow: 0 0 10px rgba(29, 155, 240, 0.5);
+}
+.active-video-card[data-platform="x"] .progress-fill,
+.active-video-card[data-platform="twitter"] .progress-fill {
+    background: linear-gradient(90deg, #1d9bf0, #00ba7c);
+}
+
+/* REDDIT ACCENTS (Orangered & Flame) */
+.active-video-card[data-platform="reddit"] {
+    border-left: 4px solid #FF4500;
+    box-shadow: 0 4px 22px rgba(255, 69, 0, 0.22);
+}
+.active-video-card[data-platform="reddit"] .active-card-tag {
+    color: #FF5722;
+    text-shadow: 0 0 12px rgba(255, 87, 34, 0.4);
+}
+.active-video-card[data-platform="reddit"] .btn-active-download,
+.btn-active-download[data-platform="reddit"],
+.btn-direct-download[data-platform="reddit"] {
+    background: linear-gradient(135deg, #FF4500 0%, #E03D00 100%);
+    box-shadow: 0 4px 16px rgba(255, 69, 0, 0.45);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    color: #ffffff;
+}
+.active-video-card[data-platform="reddit"] .btn-active-download:hover,
+.btn-active-download[data-platform="reddit"]:hover,
+.btn-direct-download[data-platform="reddit"]:hover {
+    background: linear-gradient(135deg, #FF5722 0%, #FF4500 100%);
+    box-shadow: 0 6px 22px rgba(255, 69, 0, 0.7);
+}
+.active-video-card[data-platform="reddit"] .active-watermark-toggle input[type="checkbox"]:checked + .active-checkbox-box {
+    background: #FF4500;
+    border-color: #FF4500;
+    box-shadow: 0 0 10px rgba(255, 69, 0, 0.5);
+}
+.active-video-card[data-platform="reddit"] .progress-fill {
+    background: linear-gradient(90deg, #FF4500, #FFA116);
+}
+
+/* TIKTOK ACCENTS (Electric Cyan & Neon Pink) */
+.active-video-card[data-platform="tiktok"] {
+    border-left: 4px solid #00f2fe;
+    box-shadow: 0 4px 24px rgba(254, 44, 85, 0.22);
+}
+.active-video-card[data-platform="tiktok"] .active-card-tag {
+    color: #00f2fe;
+    text-shadow: 0 0 12px rgba(0, 242, 254, 0.45);
+}
+.active-video-card[data-platform="tiktok"] .btn-active-download,
+.btn-active-download[data-platform="tiktok"],
+.btn-direct-download[data-platform="tiktok"] {
+    background: linear-gradient(135deg, #0a0a0f 0%, #161823 45%, #fe2c55 100%);
+    border: 1.5px solid #00f2fe;
+    box-shadow: 0 4px 16px rgba(254, 44, 85, 0.4), inset 0 0 8px rgba(0, 242, 254, 0.2);
+    color: #ffffff;
+}
+.active-video-card[data-platform="tiktok"] .btn-active-download:hover,
+.btn-active-download[data-platform="tiktok"]:hover,
+.btn-direct-download[data-platform="tiktok"]:hover {
+    background: linear-gradient(135deg, #fe2c55 0%, #25f4ee 100%);
+    color: #000000;
+    font-weight: 800;
+    box-shadow: 0 6px 22px rgba(0, 242, 254, 0.7);
+}
+.active-video-card[data-platform="tiktok"] .active-watermark-toggle input[type="checkbox"]:checked + .active-checkbox-box {
+    background: #fe2c55;
+    border-color: #00f2fe;
+}
+.active-video-card[data-platform="tiktok"] .progress-fill {
+    background: linear-gradient(90deg, #00f2fe, #fe2c55);
+}
+
+/* YOUTUBE ACCENTS (Default Red) */
+.active-video-card[data-platform="youtube"] {
+    border-left: 4px solid var(--accent-red);
+}
+.active-video-card[data-platform="youtube"] .active-card-tag {
+    color: #f87171;
+}
+.active-video-card[data-platform="youtube"] .btn-active-download,
+.btn-active-download[data-platform="youtube"],
+.btn-direct-download[data-platform="youtube"] {
+    background: var(--accent-red);
+    box-shadow: 0 4px 14px var(--accent-glow);
+}
+.active-video-card[data-platform="youtube"] .btn-active-download:hover,
+.btn-active-download[data-platform="youtube"]:hover,
+.btn-direct-download[data-platform="youtube"]:hover {
+    background: var(--accent-red-hover);
+    box-shadow: 0 6px 20px rgba(239, 68, 68, 0.6);
+}
+
+/* GENERIC / WEB MEDIA ACCENTS (Violet & Magenta) */
+.active-video-card[data-platform="generic"] {
+    border-left: 4px solid #8b5cf6;
+    box-shadow: 0 4px 22px rgba(139, 92, 246, 0.2);
+}
+.active-video-card[data-platform="generic"] .active-card-tag {
+    color: #a78bfa;
+}
+.active-video-card[data-platform="generic"] .btn-active-download,
+.btn-active-download[data-platform="generic"],
+.btn-direct-download[data-platform="generic"] {
+    background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+    box-shadow: 0 4px 16px rgba(139, 92, 246, 0.4);
+    color: #ffffff;
+}
+.active-video-card[data-platform="generic"] .btn-active-download:hover,
+.btn-active-download[data-platform="generic"]:hover,
+.btn-direct-download[data-platform="generic"]:hover {
+    background: linear-gradient(135deg, #8b5cf6 0%, #d946ef 100%);
+    box-shadow: 0 6px 22px rgba(217, 70, 239, 0.6);
 }
 
 .active-watermark-toggle {

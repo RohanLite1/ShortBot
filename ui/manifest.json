@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "ShortBot - AI YouTube Shorts Curator",
-  "version": "1.1.1",
-  "description": "AI-assisted YouTube Shorts finder, downloader, and compilation tool.",
+  "version": "1.1.2",
+  "description": "AI-assisted video downloader and curator for Instagram Reels, YouTube Shorts, X, Reddit, and TikTok.",
   "browser_specific_settings": {
     "gecko": {
       "id": "shortbot@curator.app",
@@ -28,11 +28,19 @@
     "tabs",
     "downloads",
     "storage",
-    "nativeMessaging"
+    "nativeMessaging",
+    "scripting"
   ],
   "host_permissions": [
     "http://127.0.0.1:5000/*",
     "http://localhost:5000/*",
-    "*://*.youtube.com/*"
+    "*://*.youtube.com/*",
+    "*://*.instagram.com/*",
+    "*://*.twitter.com/*",
+    "*://*.x.com/*",
+    "*://*.reddit.com/*",
+    "*://*.tiktok.com/*",
+    "*://*.threads.net/*",
+    "*://*.facebook.com/*"
   ]
 }

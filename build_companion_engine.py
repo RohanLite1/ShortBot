@@ -18,9 +18,34 @@ def find_pyinstaller():
     raise RuntimeError("PyInstaller not found in .venv or PATH!")
 
 def find_system_ffmpeg_dir():
+    # 1. System PATH
     ffmpeg_exe = shutil.which("ffmpeg")
     if ffmpeg_exe:
         return os.path.dirname(ffmpeg_exe)
+
+    # 2. Local workspace bin/
+    local_bin = os.path.join(BASE_DIR, "bin", "ffmpeg.exe")
+    if os.path.isfile(local_bin):
+        return os.path.dirname(local_bin)
+
+    # 3. Check WinGet packages directory in LocalAppData
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if local_app_data:
+        shortbot_bin = os.path.join(local_app_data, "ShortBot", "bin", "ffmpeg.exe")
+        if os.path.isfile(shortbot_bin):
+            return os.path.dirname(shortbot_bin)
+        winget_pkgs = os.path.join(local_app_data, "Microsoft", "WinGet", "Packages")
+        if os.path.isdir(winget_pkgs):
+            for root, dirs, files in os.walk(winget_pkgs):
+                for f in files:
+                    if f.lower() == "ffmpeg.exe":
+                        return root
+
+    # 4. Common installation locations
+    for common_dir in (r"C:\ffmpeg\bin", r"C:\Program Files\ffmpeg\bin", r"C:\Program Files (x86)\ffmpeg\bin"):
+        if os.path.isfile(os.path.join(common_dir, "ffmpeg.exe")):
+            return common_dir
+
     return None
 
 def find_iscc():
