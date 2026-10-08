@@ -67,11 +67,6 @@ MAX_SEARCHES = 3
 # No artificial delay between searches.
 WAIT_BETWEEN_SEARCHES = 0
 
-# How long to wait after YouTube search results load.
-YOUTUBE_WAIT = 1000
-
-WEBCMD_SESSION = "short-bot-nf"
-
 
 # ============================================================
 # SEARCH RETRIEVAL ENGINES
@@ -266,73 +261,21 @@ def search_youtube_fast(search_query, max_results=20):
 
 
 
-def search_youtube_webcmd(search_query):
-    """Fallback search using webcmd browser automation."""
-    js_query = json.dumps(search_query)
-    browser_script = f"""
-await page.goto('https://www.youtube.com');
-
-const searchBox = page.getByRole('combobox');
-
-await searchBox.fill({js_query});
-
-const searchButton = page.getByRole('button', {{
-    name: 'Search',
-    description: 'Search'
-}});
-
-await searchButton.click();
-
-await page.waitForTimeout({YOUTUBE_WAIT});
-
-const shortsLinks = await page.locator('a[href*="/shorts/"]').all();
-
-const results = [];
-const seen = new Set();
-
-for (const link of shortsLinks) {{
-
-    const url = await link.getAttribute('href');
-    const title = await link.getAttribute('title');
-
-    if (!url || url === '/shorts/' || !title) {{
-        continue;
-    }}
-
-    if (seen.has(url)) {{
-        continue;
-    }}
-
-    seen.add(url);
-
-    results.push({{
-        title: title,
-        url: 'https://www.youtube.com' + url
-    }});
-}}
-
-return results;
-"""
-    browser_file = None
+def search_youtube_fallback_http(search_query, max_results=20):
+    """Fallback search using yt-dlp extended query with relaxed filters (~2s without spawning a browser)."""
     try:
-        temp_file = tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".js",
-            delete=False,
-            encoding="utf-8"
-        )
-        temp_file.write(browser_script)
-        temp_file.close()
-        browser_file = temp_file.name
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        cookies_file = os.path.join(base_dir, "cookies.txt")
+        cookies_args = ["--cookies", cookies_file] if os.path.isfile(cookies_file) else []
 
         command = [
-            "webcmd.cmd",
-            "--session",
-            WEBCMD_SESSION,
-            "browser",
-            "run",
-            "--file",
-            browser_file
+            sys.executable, "-m", "yt_dlp",
+            *cookies_args,
+            "--extractor-args", "youtube:player_client=android,ios,web",
+            "--flat-playlist",
+            "--dump-json",
+            "--no-warnings",
+            f"ytsearch{max_results * 2}:{search_query} shorts"
         ]
         process = subprocess.run(
             command,
@@ -340,25 +283,43 @@ return results;
             text=True,
             encoding="utf-8",
             errors="replace",
+            timeout=25,
             **get_no_window_kwargs()
         )
         if process.returncode != 0:
-            print("Webcmd error:", process.stderr)
             return []
 
-        output = process.stdout.strip()
-        data = json.loads(output)
-        shorts = data.get("result", [])
-        return shorts if isinstance(shorts, list) else []
-    except Exception as e:
-        print("Webcmd error:", e)
-        return []
-    finally:
-        if browser_file and os.path.exists(browser_file):
+        results = []
+        seen = set()
+        for line in process.stdout.splitlines():
+            line = line.strip()
+            if not line:
+                continue
             try:
-                os.remove(browser_file)
-            except OSError:
-                pass
+                item = json.loads(line)
+            except Exception:
+                continue
+            vid_id = item.get("id")
+            title = item.get("title")
+            duration = item.get("duration")
+
+            if duration is not None and (duration > 90 or duration < 3):
+                continue
+            if not vid_id or not title:
+                continue
+            if vid_id in seen:
+                continue
+            seen.add(vid_id)
+            results.append({
+                "title": title,
+                "url": f"https://www.youtube.com/shorts/{vid_id}"
+            })
+            if len(results) >= max_results:
+                break
+        return results
+    except Exception as e:
+        safe_print(f"YouTube HTTP fallback search notice: {e}")
+        return []
 
 
 def search_reddit_videos(search_query, max_results=20):
@@ -410,95 +371,65 @@ def search_reddit_videos(search_query, max_results=20):
 
 
 def search_instagram_reels(search_query, max_results=20):
-    """Search for Instagram Reels using webcmd browser automation or public search feeds."""
-    js_query = json.dumps(f"site:instagram.com/reel {search_query}")
-    browser_script = f"""
-await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent({js_query}));
-await page.waitForTimeout(2200);
-const links = await page.locator('a[href*="instagram.com"]').all();
-const results = [];
-const seen = new Set();
-for (const link of links) {{
-    let href = await link.getAttribute('href') || '';
-    if (href.includes('duckduckgo.com/l/?uddg=')) {{
-        try {{
-            const parsed = new URL(href, 'https://duckduckgo.com');
-            const target = parsed.searchParams.get('uddg');
-            if (target) href = decodeURIComponent(target);
-        }} catch(e) {{}}
-    }}
-    let text = await link.innerText() || '';
-    if (href && (href.includes('instagram.com/reel/') || href.includes('instagram.com/reels/') || href.includes('instagram.com/p/'))) {{
-        const cleanHref = href.split('?')[0].replace(/\\/$/, '') + '/';
-        if (!seen.has(cleanHref)) {{
-            seen.add(cleanHref);
-            let snippet = '';
-            try {{
-                const parent = await link.evaluateHandle(el => el.closest('article, [data-testid="result"], li'));
-                if (parent) {{
-                    const snipEl = await parent.$('[data-result="snippet"], [data-testid="result-snippet"], .result__snippet');
-                    if (snipEl) snippet = await snipEl.innerText();
-                    const h2El = await parent.$('h2, [data-testid="result-title-a"]');
-                    if (h2El && (!text || text === 'Instagram Reel')) {{
-                        const h2Text = await h2El.innerText();
-                        if (h2Text) text = h2Text;
-                    }}
-                }}
-            }} catch(e) {{}}
-            text = (text || '').replace(/\\s+/g, ' ').trim();
-            if (!text || text.includes('instagram.com') || text.length < 3) {{
-                text = 'Instagram Reel';
-            }}
-            results.push({{ title: text, snippet: (snippet || '').trim(), url: cleanHref, platform: 'instagram' }});
-        }}
-    }}
-}}
-return results;
-"""
-    browser_file = None
+    """Search for Instagram Reels using direct HTTP search feeds and public syndication (no browser)."""
+    results = []
+    seen = set()
+
+    # 1. Direct HTTP search via DuckDuckGo HTML
     try:
-        temp_file = tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".js",
-            delete=False,
-            encoding="utf-8"
+        q_str = f"site:instagram.com/reel {search_query}"
+        url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q_str)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5"
+            }
         )
-        temp_file.write(browser_script)
-        temp_file.close()
-        browser_file = temp_file.name
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            page_html = resp.read().decode("utf-8", errors="ignore")
 
-        command = [
-            "webcmd.cmd",
-            "--session",
-            WEBCMD_SESSION,
-            "browser",
-            "run",
-            "--file",
-            browser_file
-        ]
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **get_no_window_kwargs()
-        )
-        if process.returncode == 0:
-            data = json.loads(process.stdout.strip())
-            reels = data.get("result", [])
-            if isinstance(reels, list) and reels:
-                return reels[:max_results]
+        blocks = re.findall(r'<div[^>]*class="[^"]*result[^"]*"[^>]*>(.*?)</div>\s*</div>', page_html, re.DOTALL)
+        for block in blocks:
+            url_m = re.search(r'uddg=([^&"\']+)', block)
+            if not url_m:
+                continue
+            target_url = urllib.parse.unquote(url_m.group(1))
+            if not ("instagram.com/reel" in target_url or "instagram.com/reels" in target_url or "instagram.com/p/" in target_url):
+                continue
+
+            clean_url = target_url.split("?")[0].rstrip("/") + "/"
+            if clean_url in seen:
+                continue
+            seen.add(clean_url)
+
+            link_title_m = re.search(r'<h2[^>]*>.*?<a[^>]*>(.*?)</a>', block, re.DOTALL)
+            title_text = ""
+            if link_title_m:
+                title_text = html.unescape(re.sub(r'<[^>]+>', '', link_title_m.group(1))).strip()
+
+            snippet_m = re.search(r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
+            snippet = html.unescape(re.sub(r'<[^>]+>', '', snippet_m.group(1))).strip() if snippet_m else ""
+
+            if not title_text or "instagram.com" in title_text.lower():
+                title_text = snippet[:60] if snippet else "Instagram Reel"
+
+            results.append({
+                "title": title_text,
+                "snippet": snippet,
+                "url": clean_url,
+                "platform": "instagram"
+            })
+            if len(results) >= max_results:
+                break
     except Exception as e:
-        safe_print(f"Webcmd Instagram search notice: {e}")
-    finally:
-        if browser_file and os.path.exists(browser_file):
-            try:
-                os.remove(browser_file)
-            except OSError:
-                pass
+        safe_print(f"Instagram HTTP search notice: {e}")
 
-    # Fallback: Query Reddit for Instagram Reels crossposts
+    if len(results) >= max_results:
+        return results
+
+    # 2. Query Reddit for Instagram Reels public crossposts
     try:
         encoded_q = urllib.parse.quote_plus(search_query)
         headers = {
@@ -507,12 +438,11 @@ return results;
         }
         endpoints = [
             f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com%2Freel+{encoded_q}&sort=relevance",
-            f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com+{encoded_q}&sort=relevance"
+            f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com%2Fp+{encoded_q}&sort=relevance",
+            f"https://www.reddit.com/r/all/search.rss?q=instagram+{encoded_q}+video&sort=relevance"
         ]
-        fallback_results = []
-        seen = set()
         for ep in endpoints:
-            if len(fallback_results) >= max_results:
+            if len(results) >= max_results:
                 break
             try:
                 req = urllib.request.Request(ep, headers=headers)
@@ -524,7 +454,7 @@ return results;
                     c_text = content.text if content is not None else ""
                     link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
                     l_href = link_elem.attrib.get("href", "") if link_elem is not None else ""
-                    
+
                     combined = f"{c_text} {l_href}"
                     matches = re.findall(r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p)/([a-zA-Z0-9_-]+)/?", combined)
                     title = entry.find("{http://www.w3.org/2005/Atom}title")
@@ -533,113 +463,81 @@ return results;
                         clean_m = f"https://www.instagram.com/reel/{code}/"
                         if clean_m not in seen:
                             seen.add(clean_m)
-                            fallback_results.append({
+                            results.append({
                                 "title": t_text,
                                 "url": clean_m,
                                 "platform": "instagram"
                             })
-                            if len(fallback_results) >= max_results:
+                            if len(results) >= max_results:
                                 break
             except Exception:
                 continue
-        if fallback_results:
-            return fallback_results
-    except Exception:
-        pass
+    except Exception as e:
+        safe_print(f"Instagram RSS fallback notice: {e}")
 
-    return []
+    return results
 
 
 def search_x_videos(search_query, max_results=20):
-    """Search for X / Twitter video posts using webcmd browser automation or public search feeds."""
-    js_query = json.dumps(f"site:x.com video {search_query}")
-    browser_script = f"""
-await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent({js_query}));
-await page.waitForTimeout(2200);
-const links = await page.locator('a[href*="/status/"], a[href*="x.com"], a[href*="twitter.com"]').all();
-const results = [];
-const seen = new Set();
-for (const link of links) {{
-    let href = await link.getAttribute('href') || '';
-    if (href.includes('duckduckgo.com/l/?uddg=')) {{
-        try {{
-            const parsed = new URL(href, 'https://duckduckgo.com');
-            const target = parsed.searchParams.get('uddg');
-            if (target) href = decodeURIComponent(target);
-        }} catch(e) {{}}
-    }}
-    let text = await link.innerText() || '';
-    if (href && (href.includes('x.com/') || href.includes('twitter.com/')) && href.includes('/status/')) {{
-        const cleanHref = href.split('?')[0];
-        if (!seen.has(cleanHref)) {{
-            seen.add(cleanHref);
-            let snippet = '';
-            try {{
-                const parent = await link.evaluateHandle(el => el.closest('article, [data-testid="result"], li'));
-                if (parent) {{
-                    const snipEl = await parent.$('[data-result="snippet"], [data-testid="result-snippet"], .result__snippet');
-                    if (snipEl) snippet = await snipEl.innerText();
-                    const h2El = await parent.$('h2, [data-testid="result-title-a"]');
-                    if (h2El && (!text || text === 'X Video Post')) {{
-                        const h2Text = await h2El.innerText();
-                        if (h2Text) text = h2Text;
-                    }}
-                }}
-            }} catch(e) {{}}
-            text = (text || '').replace(/\\s+/g, ' ').trim();
-            if (!text || text.includes('x.com') || text.includes('twitter.com') || text.length < 3) {{
-                text = 'X Video Post';
-            }}
-            results.push({{ title: text, snippet: (snippet || '').trim(), url: cleanHref, platform: 'x' }});
-        }}
-    }}
-}}
-return results;
-"""
-    browser_file = None
+    """Search for X / Twitter video posts using direct HTTP search feeds and public syndication (no browser)."""
+    results = []
+    seen = set()
+
+    # 1. Direct HTTP search via DuckDuckGo HTML
     try:
-        temp_file = tempfile.NamedTemporaryFile(
-            mode="w",
-            suffix=".js",
-            delete=False,
-            encoding="utf-8"
+        q_str = f"site:x.com video {search_query}"
+        url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q_str)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5"
+            }
         )
-        temp_file.write(browser_script)
-        temp_file.close()
-        browser_file = temp_file.name
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            page_html = resp.read().decode("utf-8", errors="ignore")
 
-        command = [
-            "webcmd.cmd",
-            "--session",
-            WEBCMD_SESSION,
-            "browser",
-            "run",
-            "--file",
-            browser_file
-        ]
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            **get_no_window_kwargs()
-        )
-        if process.returncode == 0:
-            data = json.loads(process.stdout.strip())
-            posts = data.get("result", [])
-            if isinstance(posts, list) and posts:
-                return posts[:max_results]
+        blocks = re.findall(r'<div[^>]*class="[^"]*result[^"]*"[^>]*>(.*?)</div>\s*</div>', page_html, re.DOTALL)
+        for block in blocks:
+            url_m = re.search(r'uddg=([^&"\']+)', block)
+            if not url_m:
+                continue
+            target_url = urllib.parse.unquote(url_m.group(1))
+            if not (("x.com/" in target_url or "twitter.com/" in target_url) and "/status/" in target_url):
+                continue
+
+            clean_url = target_url.split("?")[0]
+            if clean_url in seen:
+                continue
+            seen.add(clean_url)
+
+            link_title_m = re.search(r'<h2[^>]*>.*?<a[^>]*>(.*?)</a>', block, re.DOTALL)
+            title_text = ""
+            if link_title_m:
+                title_text = html.unescape(re.sub(r'<[^>]+>', '', link_title_m.group(1))).strip()
+
+            snippet_m = re.search(r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
+            snippet = html.unescape(re.sub(r'<[^>]+>', '', snippet_m.group(1))).strip() if snippet_m else ""
+
+            if not title_text or "x.com" in title_text.lower() or "twitter.com" in title_text.lower():
+                title_text = snippet[:60] if snippet else "X Video Post"
+
+            results.append({
+                "title": title_text,
+                "snippet": snippet,
+                "url": clean_url,
+                "platform": "x"
+            })
+            if len(results) >= max_results:
+                break
     except Exception as e:
-        safe_print(f"Webcmd X search notice: {e}")
-    finally:
-        if browser_file and os.path.exists(browser_file):
-            try:
-                os.remove(browser_file)
-            except OSError:
-                pass
+        safe_print(f"X HTTP search notice: {e}")
 
-    # Fallback: Query Reddit for X/Twitter video crossposts
+    if len(results) >= max_results:
+        return results
+
+    # 2. Query Reddit for X/Twitter video public crossposts
     try:
         encoded_q = urllib.parse.quote_plus(search_query)
         headers = {
@@ -648,12 +546,11 @@ return results;
         }
         endpoints = [
             f"https://www.reddit.com/r/all/search.rss?q=url%3Atwitter.com+{encoded_q}+video&sort=relevance",
-            f"https://www.reddit.com/r/all/search.rss?q=url%3Ax.com+{encoded_q}+video&sort=relevance"
+            f"https://www.reddit.com/r/all/search.rss?q=url%3Ax.com+{encoded_q}+video&sort=relevance",
+            f"https://www.reddit.com/r/all/search.rss?q=twitter+{encoded_q}+video&sort=relevance"
         ]
-        fallback_results = []
-        seen = set()
         for ep in endpoints:
-            if len(fallback_results) >= max_results:
+            if len(results) >= max_results:
                 break
             try:
                 req = urllib.request.Request(ep, headers=headers)
@@ -670,21 +567,20 @@ return results;
                         clean_m = m.split("?")[0]
                         if clean_m not in seen:
                             seen.add(clean_m)
-                            fallback_results.append({
+                            results.append({
                                 "title": t_text,
                                 "url": clean_m,
                                 "platform": "x"
                             })
-                            if len(fallback_results) >= max_results:
+                            if len(results) >= max_results:
                                 break
             except Exception:
                 continue
-        if fallback_results:
-            return fallback_results
-    except Exception:
-        pass
+    except Exception as e:
+        safe_print(f"X RSS fallback notice: {e}")
 
-    return []
+    return results
+
 
 
 def parse_direct_media_urls(user_input):
@@ -978,8 +874,8 @@ def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, r
                 shorts = search_youtube_fast(search_query, max_results=target_count)
 
             if not shorts:
-                print("Fast engine returned no results. Falling back to webcmd browser...")
-                shorts = search_youtube_webcmd(search_query)
+                print("Fast engine returned no results. Falling back to in-process search...")
+                shorts = search_youtube_fallback_http(search_query, max_results=target_count)
 
         for s in shorts:
             if isinstance(s, dict) and "platform" not in s:
