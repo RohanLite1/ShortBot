@@ -37,7 +37,7 @@ except Exception:
     pass
 
 from flask import Flask, request, jsonify, send_from_directory, send_file
-from agent import find_shorts
+from agent import find_shorts, is_valid_url_for_platform
 import subprocess
 import uuid
 import glob
@@ -563,11 +563,17 @@ def search():
     ).strip()
 
     quantity = data.get("quantity")
+    platform = str(data.get("platform", "youtube")).strip().lower() or "youtube"
+    exclude_urls = data.get("exclude_urls", [])
+    refresh = bool(data.get("refresh", False))
+
+    if not isinstance(exclude_urls, list):
+        exclude_urls = []
 
     if not user_request:
         return jsonify({
             "success": False,
-            "error": "Please enter what Shorts you are looking for."
+            "error": "Please enter what videos you are looking for, or paste links to compile."
         }), 400
 
     try:
@@ -587,12 +593,23 @@ def search():
     try:
         results = find_shorts(
             user_request,
-            quantity
+            quantity,
+            platform=platform,
+            exclude_urls=exclude_urls,
+            refresh=refresh
         )
+
+        filtered_results = [
+            r for r in results
+            if isinstance(r, dict) and is_valid_url_for_platform(r.get("url", ""), platform)
+        ]
+        for r in filtered_results:
+            r["platform"] = platform
 
         return jsonify({
             "success": True,
-            "results": results
+            "platform": platform,
+            "results": filtered_results
         })
 
     except Exception as e:

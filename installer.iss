@@ -2,7 +2,7 @@
 ; Inno Setup 6+ script - 100% Native, No Batch Scripts Required
 
 #define MyAppName "ShortBot Companion Engine"
-#define MyAppVersion "1.1.2"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "ShortBot"
 #define MyAppURL "https://github.com/RohanLite1/ShortBot"
 #define MyAppExeName "ShortBot-Engine.exe"

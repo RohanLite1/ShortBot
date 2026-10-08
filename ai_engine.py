@@ -241,113 +241,149 @@ Return ONLY a valid JSON object matching this schema:
     return local_parse_request(user_request)
 
 
-def compute_title_relevance_score(title: str, plan: dict, user_request: str) -> float:
-    """Calculate empirical relevance score (0.0 to 1.0) of a Short title against user intent."""
-    title_lower = title.lower()
-    score = 0.0
+def compute_title_relevance_score(
+    title: str,
+    plan: dict,
+    user_request: str,
+    snippet: str = "",
+    url: str = "",
+    platform: str = "youtube"
+) -> float:
+    """Calculate empirical semantic relevance score (0.0 to 1.0) of a video candidate against user intent."""
+    title_text = (title or "").strip()
+    snippet_text = (snippet or "").strip()
+    url_text = (url or "").strip().lower()
+
+    combined_meta = f"{title_text} {snippet_text} {url_text}".lower()
+    clean_text = re.sub(r'https?://\S+', ' ', combined_meta)
 
     topic = plan.get("topic", "").lower()
     subjects = [s.lower() for s in plan.get("subjects", [])]
     styles = [s.lower() for s in plan.get("style", [])]
 
-    # Stopwords to ignore
-    stop_words = {"a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "with", "is", "are", "of", "from"}
+    # Stopwords to ignore in query tokens
+    stop_words = {
+        "a", "an", "the", "and", "or", "in", "on", "at", "to", "for", "with",
+        "is", "are", "of", "from", "video", "videos", "short", "shorts", "reel",
+        "reels", "clip", "clips", "watch", "post", "best", "some", "me", "i", "want"
+    }
 
-    # 1. Subject Match (Highest weight: 0.45)
+    # Extract critical subject tokens from user_request (length > 2)
+    user_tokens = [w for w in re.findall(r"[a-z0-9]+", user_request.lower()) if len(w) > 2 and w not in stop_words]
+
+    # Discard non-video administrative or error pages
+    junk_patterns = [
+        "login • instagram", "sign up • instagram", "terms of use", "privacy policy",
+        "page not found", "404 not found", "enable javascript", "cookie policy"
+    ]
+    if any(jp in combined_meta for jp in junk_patterns):
+        return 0.0
+
+    score = 0.0
+
+    # 1. Core Subject Tokens Verification (Highest Weight: 0.50)
+    if user_tokens:
+        matched_tokens = 0
+        for token in user_tokens:
+            if re.search(rf"\b{re.escape(token)}", clean_text) or token in url_text:
+                matched_tokens += 1
+            elif len(token) > 4 and token[:len(token)-1] in clean_text:
+                matched_tokens += 1
+
+        token_ratio = matched_tokens / len(user_tokens)
+        score += token_ratio * 0.50
+
+        # If zero core user tokens matched anywhere in metadata, heavily penalize
+        if matched_tokens == 0:
+            score -= 0.40
+    else:
+        score += 0.25
+
+    # 2. Named Subject Match (Weight: 0.25)
     if subjects:
-        matched_subjects = sum(1 for s in subjects if s in title_lower)
+        matched_subjects = sum(1 for s in subjects if s in clean_text or s in url_text)
         subject_ratio = matched_subjects / len(subjects)
-        score += subject_ratio * 0.45
+        score += subject_ratio * 0.25
     else:
-        # No specific subjects requested, grant baseline
-        score += 0.20
+        score += 0.10
 
-    # 2. Topic Keyword Match (Weight: 0.35)
-    topic_tokens = [w for w in re.findall(r"\w+", topic) if len(w) > 2 and w not in stop_words]
-    if topic_tokens:
-        matched_tokens = sum(1 for t in topic_tokens if t in title_lower)
-        token_ratio = matched_tokens / len(topic_tokens)
-        score += token_ratio * 0.35
-    else:
-        score += 0.15
-
-    # 3. Style Match (Weight: 0.15)
+    # 3. Style / Mood / Intent Match (Weight: 0.20)
     if styles:
         matched_styles = 0
         for st in styles:
             synonyms = STYLE_KEYWORDS.get(st, [st])
-            if any(syn in title_lower for syn in synonyms):
+            if any(re.search(rf"\b{re.escape(syn)}", clean_text) for syn in synonyms):
                 matched_styles += 1
-        score += (matched_styles / len(styles)) * 0.15
+        score += (matched_styles / len(styles)) * 0.20
     else:
         score += 0.10
 
-    # 4. Penalty for completely unrelated obvious spam or off-topic keywords
-    # E.g. If Minecraft is requested and title has 'Roblox' without 'Minecraft'
-    if "minecraft" in topic and "roblox" in title_lower and "minecraft" not in title_lower:
-        score -= 0.50
-    if "sheldon" in topic and "sheldon" not in title_lower and "cooper" not in title_lower:
-        score -= 0.30
+    # 4. Keyword Conflict Penalties (Off-topic cross-contamination)
+    if "minecraft" in user_request.lower() and "minecraft" not in clean_text and any(g in clean_text for g in ["roblox", "fortnite", "gta"]):
+        score -= 0.60
+    if "cats" in user_request.lower() and "cat" not in clean_text and "dog" in clean_text:
+        score -= 0.40
 
-    return max(0.0, min(1.0, score))
+    return max(0.0, min(1.0, round(score, 3)))
 
 
-def batch_classify_relevance(user_request: str, plan: dict, titles: list[str]) -> list[int]:
-    """Return 1-indexed list of relevant Shorts. Uses Gemini Cloud if available, else local scorer."""
-    if not titles:
+def batch_classify_relevance(
+    user_request: str,
+    plan: dict,
+    candidates: list,
+    platform: str = "youtube"
+) -> list[int]:
+    """Return 1-indexed list of relevant videos using the Local Rule & Semantic NLP Filter.
+    Supports list of candidate dicts or list of candidate title strings.
+    """
+    if not candidates:
         return []
 
-    api_key = get_gemini_api_key()
-    if api_key and len(titles) <= 30:
-        numbered = "\n".join(f"{i+1}. {t}" for i, t in enumerate(titles))
-        prompt = f"""
-Strict relevance classifier for YouTube Shorts.
-USER REQUEST: {user_request}
-TOPIC: {plan.get("topic", "")}
-SUBJECTS: {plan.get("subjects", [])}
+    # Normalize candidates into list of dicts
+    norm_candidates = []
+    for item in candidates:
+        if isinstance(item, dict):
+            norm_candidates.append(item)
+        else:
+            norm_candidates.append({"title": str(item), "snippet": "", "url": ""})
 
-SHORTS FOUND:
-{numbered}
-
-Determine which Shorts are relevant. Return ONLY valid JSON:
-{{"relevant": [1, 2, 5]}}
-"""
-        res = call_gemini_flash(prompt, json_mode=True, timeout=6)
-        if res:
-            try:
-                clean_res = res
-                if clean_res.startswith("```"):
-                    lines = clean_res.splitlines()
-                    clean_res = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-                parsed = json.loads(clean_res)
-                indices = parsed.get("relevant", [])
-                if isinstance(indices, list):
-                    valid = [int(i) for i in indices if isinstance(i, (int, str)) and str(i).isdigit() and 1 <= int(i) <= len(titles)]
-                    if valid:
-                        return valid
-            except Exception as e:
-                print(f"[AI Engine] Error parsing Gemini batch classification: {e}")
-
-    # Local High-Precision Scoring
     scored = []
-    for i, title in enumerate(titles, start=1):
-        s = compute_title_relevance_score(title, plan, user_request)
-        scored.append((i, s, title))
+    for i, c in enumerate(norm_candidates, start=1):
+        title = c.get("title", "")
+        snippet = c.get("snippet", "")
+        url = c.get("url", "")
+        score = compute_title_relevance_score(
+            title=title,
+            plan=plan,
+            user_request=user_request,
+            snippet=snippet,
+            url=url,
+            platform=platform
+        )
+        scored.append((i, score, title))
 
-    # Accept titles scoring >= 0.35
+    # Strict threshold: 0.35
     relevant = [i for i, s, t in scored if s >= 0.35]
 
-    # If too few were accepted but we have results, take the top 50% highest scoring
-    if len(relevant) < max(1, len(titles) // 3):
+    accepted_count = len(relevant)
+    rejected_count = len(norm_candidates) - accepted_count
+    print(f"[NLP Filter] Evaluated {len(norm_candidates)} {platform.capitalize()} candidates: {accepted_count} accepted, {rejected_count} off-topic rejected.")
+
+    # Fallback safety: If query was extremely specific and 0 candidates met threshold,
+    # pick the top highest-scoring candidates above baseline (> 0.15) rather than stalling
+    if not relevant and scored:
         scored_sorted = sorted(scored, key=lambda x: x[1], reverse=True)
-        top_half = [x[0] for x in scored_sorted[:max(3, len(titles) // 2)] if x[1] > 0.1]
-        return top_half
+        top_candidates = [x[0] for x in scored_sorted[:max(2, len(norm_candidates) // 2)] if x[1] > 0.15]
+        if top_candidates:
+            print(f"[NLP Filter] Relaxed threshold fallback: accepted top {len(top_candidates)} closest candidates.")
+            return top_candidates
 
     return relevant
 
 
-def classify_relevance(user_request: str, title: str) -> bool:
-    """Classify a single title's relevance to the user request."""
+def classify_relevance(user_request: str, title: str, snippet: str = "", url: str = "") -> bool:
+    """Classify a single item's relevance to the user request."""
     plan = local_parse_request(user_request)
-    score = compute_title_relevance_score(title, plan, user_request)
+    score = compute_title_relevance_score(title, plan, user_request, snippet=snippet, url=url)
     return score >= 0.35
+

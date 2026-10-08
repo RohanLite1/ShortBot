@@ -70,10 +70,14 @@ def start_backend():
             except Exception:
                 pass
         else:
-            python_exe = sys.executable
-            pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
-            if not os.path.exists(pythonw_exe):
-                pythonw_exe = python_exe
+            venv_pythonw = os.path.join(BASE_DIR, ".venv", "Scripts", "pythonw.exe")
+            if os.path.isfile(venv_pythonw):
+                pythonw_exe = venv_pythonw
+            else:
+                python_exe = sys.executable
+                pythonw_exe = os.path.join(os.path.dirname(python_exe), "pythonw.exe")
+                if not os.path.exists(pythonw_exe):
+                    pythonw_exe = python_exe
             try:
                 subprocess.Popen(
                     [pythonw_exe, BACKEND_SCRIPT],

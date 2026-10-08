@@ -10,7 +10,7 @@
         content="width=device-width, initial-scale=1.0"
     >
 
-    <title>ShortBot</title>
+    <title>ShortBot - AI Video Curator & Compiler</title>
 
     <link
         rel="stylesheet"
@@ -40,7 +40,7 @@
             </div>
 
             <p>
-                Find, download, and compile YouTube Shorts with AI curation.
+                Find, download, and compile Shorts, Reels, and clips with AI curation.
             </p>
 
         </header>
@@ -176,27 +176,38 @@
                 <span>OR SEARCH WITH AI CURATION</span>
             </div>
 
-            <label for="request">
-                What Shorts are you looking for?
+            <label for="request" class="curation-request-label">
+                <span>What videos are you looking to compile?</span>
+                <span class="curation-label-hint">Enter topic or paste video URLs</span>
             </label>
 
             <textarea
                 id="request"
-                placeholder="Example: Minecraft Shorts showing funny things villagers do"
+                placeholder="Example: Funny cat moments, parkour fails, gaming clips, or paste video URLs..."
             ></textarea>
 
 
             <div class="form-row">
                 <div class="form-group form-group-sm">
                     <label for="quantity">
-                        Number of Shorts
+                        Clip Count
                     </label>
-                    <input
-                        type="number"
-                        id="quantity"
-                        min="1"
-                        value="5"
-                    >
+                    <div class="stepper-wrap" title="Number of clips to curate and compile">
+                        <button type="button" class="stepper-btn stepper-btn-dec" id="btnQuantityDec" title="Decrease count" aria-label="Decrease clip count">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        </button>
+                        <input
+                            type="number"
+                            id="quantity"
+                            class="stepper-input"
+                            min="1"
+                            max="50"
+                            value="5"
+                        >
+                        <button type="button" class="stepper-btn stepper-btn-inc" id="btnQuantityInc" title="Increase count" aria-label="Increase clip count">
+                            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                        </button>
+                    </div>
                 </div>
 
                 <div class="form-group form-group-lg">
@@ -216,14 +227,57 @@
             </div>
 
 
-            <button id="searchButton">
-                FIND SHORTS
-            </button>
+            <!-- Distinct Multiplatform Compiler Action Buttons -->
+            <div class="platform-compiler-container">
+                <div class="platform-compiler-header">
+                    <span class="platform-compiler-heading">COMPILE FROM PLATFORM</span>
+                    <span class="platform-compiler-subheading">Choose platform to curate &amp; compile:</span>
+                </div>
+                <div class="platform-buttons-grid">
+                    <button id="btnCompileYoutube" class="btn-compile-platform btn-platform-youtube" data-platform="youtube" type="button" title="Curate and compile YouTube Shorts">
+                        <span class="platform-btn-icon">▶</span>
+                        <div class="platform-btn-text-group">
+                            <span class="platform-btn-title">COMPILE SHORTS</span>
+                            <span class="platform-btn-sub">YouTube Shorts</span>
+                        </div>
+                    </button>
+                    <button id="btnCompileInstagram" class="btn-compile-platform btn-platform-instagram" data-platform="instagram" type="button" title="Curate and compile Instagram Reels">
+                        <span class="platform-btn-icon">📸</span>
+                        <div class="platform-btn-text-group">
+                            <span class="platform-btn-title">COMPILE REELS</span>
+                            <span class="platform-btn-sub">Instagram Reels</span>
+                        </div>
+                    </button>
+                    <button id="btnCompileX" class="btn-compile-platform btn-platform-x" data-platform="x" type="button" title="Curate and compile X (Twitter) video posts">
+                        <span class="platform-btn-icon">𝕏</span>
+                        <div class="platform-btn-text-group">
+                            <span class="platform-btn-title">COMPILE X VIDEOS</span>
+                            <span class="platform-btn-sub">X / Twitter</span>
+                        </div>
+                    </button>
+                    <button id="btnCompileReddit" class="btn-compile-platform btn-platform-reddit" data-platform="reddit" type="button" title="Curate and compile Reddit video clips">
+                        <span class="platform-btn-icon">🤖</span>
+                        <div class="platform-btn-text-group">
+                            <span class="platform-btn-title">COMPILE REDDIT</span>
+                            <span class="platform-btn-sub">Reddit Videos</span>
+                        </div>
+                    </button>
+                </div>
+                <button id="searchButton" style="display: none;" type="button">FIND VIDEOS</button>
+            </div>
 
 
             <section id="results">
 
-                <h2>Results</h2>
+                <div class="results-heading-bar">
+                    <h2>Results</h2>
+                    <button id="btnRefreshResults" class="btn-refresh-results" type="button" title="Fetch new different video clips for this search">
+                        <svg class="refresh-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/>
+                        </svg>
+                        <span id="btnRefreshText">REFRESH CLIPS</span>
+                    </button>
+                </div>
 
                 <!-- Persistent In-Page Compilation Ready & Save As Card -->
                 <div id="compilationSaveCard" class="compilation-save-card" style="display: none;">
@@ -235,7 +289,7 @@
                         <button id="cardCloseSaveCard" class="btn-card-close" type="button" title="Dismiss">✕</button>
                     </div>
                     <p class="compilation-card-prompt">
-                        Your Shorts have been compiled! Choose where to save your video:
+                        Your video compilation is ready! Choose where to save your video:
                     </p>
                     <div class="compilation-card-actions">
                         <button id="cardSaveAsButton" class="btn-save-as-primary" type="button">
@@ -257,7 +311,7 @@
                 </div>
 
                 <p id="status">
-                    Enter a request and click "Find Shorts".
+                    Enter a topic or paste URLs, then choose a platform to compile.
                 </p>
 
             </section>

@@ -1,6 +1,18 @@
 const searchButton =
     document.getElementById("searchButton");
 
+const btnCompileYoutube =
+    document.getElementById("btnCompileYoutube");
+
+const btnCompileInstagram =
+    document.getElementById("btnCompileInstagram");
+
+const btnCompileX =
+    document.getElementById("btnCompileX");
+
+const btnCompileReddit =
+    document.getElementById("btnCompileReddit");
+
 const requestInput =
     document.getElementById("request");
 
@@ -19,10 +31,44 @@ const status =
 const openTabButton =
     document.getElementById("openTabButton");
 
+const btnRefreshResults =
+    document.getElementById("btnRefreshResults");
+
+const btnRefreshText =
+    document.getElementById("btnRefreshText");
+
 
 let shorts = [];
 
+let seenShortUrls = new Set();
+
 let downloadedFiles = {};
+
+let currentPlatform = "youtube";
+
+function detectPlatform(url) {
+    if (!url) return "other";
+    const u = String(url).toLowerCase();
+    if (u.includes("youtube.com") || u.includes("youtu.be")) return "youtube";
+    if (u.includes("instagram.com")) return "instagram";
+    if (u.includes("twitter.com") || u.includes("x.com")) return "x";
+    if (u.includes("reddit.com") || u.includes("v.redd.it")) return "reddit";
+    if (u.includes("tiktok.com")) return "tiktok";
+    return "other";
+}
+
+function getInferredFilename(url) {
+    if (!url) return null;
+    const mYt = url.match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
+    if (mYt) return `short_${mYt[1]}.mp4`;
+    const mIg = url.match(/instagram\.com\/(?:reel|reels|p)\/([a-zA-Z0-9_-]+)/);
+    if (mIg) return `short_ig_${mIg[1]}.mp4`;
+    const mX = url.match(/(?:twitter|x)\.com\/[^/]+\/status\/(\d+)/);
+    if (mX) return `short_x_${mX[1]}.mp4`;
+    const mRed = url.match(/reddit\.com\/r\/[^/]+\/comments\/([a-zA-Z0-9]+)/);
+    if (mRed) return `short_red_${mRed[1]}.mp4`;
+    return null;
+}
 
 const BACKEND_URL = (window.location.protocol.startsWith("http") && window.location.port === "5000")
     ? ""
@@ -284,7 +330,8 @@ async function saveAppState() {
             savedActiveWatermarkCheckbox: watermarkCheckbox ? watermarkCheckbox.checked : false,
             savedShorts: shorts,
             savedStatusText: status.textContent,
-            savedCompilation: currentCompilation
+            savedCompilation: currentCompilation,
+            savedPlatform: currentPlatform
         });
     } catch (e) {
         console.warn("Could not save state:", e);
@@ -299,9 +346,14 @@ async function restoreAppState() {
             "savedWatermark",
             "savedActiveWatermarkCheckbox",
             "savedShorts",
-            "savedStatusText"
+            "savedStatusText",
+            "savedCompilation",
+            "savedPlatform"
         ]);
 
+        if (data.savedPlatform) {
+            currentPlatform = data.savedPlatform;
+        }
         if (data.savedRequest && !requestInput.value) {
             requestInput.value = data.savedRequest;
         }
@@ -317,10 +369,13 @@ async function restoreAppState() {
         }
 
         if (Array.isArray(data.savedShorts) && data.savedShorts.length > 0) {
+            data.savedShorts.forEach((s) => {
+                if (s && s.url) seenShortUrls.add(s.url);
+            });
             if (data.savedStatusText) {
                 status.textContent = data.savedStatusText;
             } else {
-                status.textContent = `Found ${data.savedShorts.length} relevant Shorts.`;
+                status.textContent = `Found ${data.savedShorts.length} relevant videos.`;
             }
             renderShorts(data.savedShorts);
         }
@@ -335,14 +390,28 @@ async function restoreAppState() {
 
 function clearResults() {
     shorts = [];
+    seenShortUrls.clear();
     downloadedFiles = {};
     document.querySelectorAll(".short-card").forEach((card) => card.remove());
     const oldControls = document.getElementById("selectionControls");
     if (oldControls) {
         oldControls.remove();
     }
+    if (btnRefreshResults) {
+        btnRefreshResults.style.display = "inline-flex";
+        const platformLabels = {
+            youtube: "Shorts",
+            instagram: "Reels",
+            x: "X Videos",
+            reddit: "Reddit Clips"
+        };
+        const pLabel = platformLabels[currentPlatform] || "Clips";
+        if (btnRefreshText) {
+            btnRefreshText.textContent = `REFRESH ${pLabel.toUpperCase()}`;
+        }
+    }
     hideCompilationMenu();
-    status.textContent = 'Enter a request and click "Find Shorts".';
+    status.textContent = 'Enter a topic or paste URLs, then choose a platform to compile.';
     storage.remove(["savedShorts", "savedStatusText"]);
 }
 
@@ -1633,9 +1702,26 @@ function updateSelectionControls() {
         compileSelectedButton.disabled =
             count < 2;
 
+        compileSelectedButton.dataset.platform = currentPlatform;
+
+        const platformLabels = {
+            youtube: "Shorts",
+            instagram: "Reels",
+            x: "X Videos",
+            reddit: "Reddit Clips"
+        };
+        const label = platformLabels[currentPlatform] || "Videos";
+
+        if (count >= 2) {
+            compileSelectedButton.textContent = `COMPILE ${count} ${label.toUpperCase()} INTO ONE VIDEO`;
+        } else {
+            compileSelectedButton.textContent = `COMPILE SELECTED`;
+        }
+
     }
 
 }
+
 
 
 // --------------------------------------------------
@@ -1761,7 +1847,11 @@ async function downloadShort(
             timer: `short-progress-timer-${short.index}`,
             detail: `short-progress-detail-${short.index}`
         });
-        cardTracker.start("Connecting to YouTube...", 5);
+        const platObj = detectPlatform(short.url);
+        const platKey = typeof platObj === "object" ? platObj.platform : platObj;
+        const platNames = { youtube: "YouTube", instagram: "Instagram", x: "X", reddit: "Reddit" };
+        const platDisplay = (typeof platObj === "object" && platObj.name) || platNames[platKey] || "media source";
+        cardTracker.start(`Connecting to ${platDisplay}...`, 5);
         cardTracker.pollTask(taskId);
     }
 
@@ -1855,10 +1945,7 @@ async function downloadShort(
             }
 
             if (!filename) {
-                const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-                if (urlMatch) {
-                    filename = `short_${urlMatch[1]}.mp4`;
-                }
+                filename = getInferredFilename(short.url) || "video.mp4";
             }
 
             const saveFilename = filename || "short.mp4";
@@ -1997,14 +2084,15 @@ async function downloadSelected() {
         const shortsToDownload =
             selectedShorts.filter(
                 function (short) {
-
-                    return !(
-                        short.downloadedFilename &&
-                        downloadedFiles[
-                            short.downloadedFilename
-                        ]
-                    );
-
+                    const inferred = getInferredFilename(short.url);
+                    if (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) {
+                        return false;
+                    }
+                    if (inferred && downloadedFiles[inferred]) {
+                        short.downloadedFilename = inferred;
+                        return false;
+                    }
+                    return true;
                 }
             );
 
@@ -2017,16 +2105,16 @@ async function downloadSelected() {
         ) {
 
             status.textContent =
-                "All selected Shorts are already downloaded. ✓";
+                "All selected videos are already downloaded. ✓";
 
-            batchTracker.complete("All selected Shorts already downloaded! ✓");
+            batchTracker.complete("All selected videos already downloaded! ✓");
             batchTracker.hide(4000);
 
             return;
 
         }
 
-        batchTracker.start(`Downloading ${shortsToDownload.length} selected Shorts...`, 5);
+        batchTracker.start(`Downloading ${shortsToDownload.length} selected videos...`, 5);
 
         /*
          * Run up to 3 downloads at once.
@@ -2076,12 +2164,12 @@ async function downloadSelected() {
                 const currentPct = Math.round((completed / selectedShorts.length) * 100);
                 batchTracker.update(
                     Math.max(5, currentPct),
-                    `Downloading Shorts (${completed + 1}/${selectedShorts.length})...`,
+                    `Downloading clips (${completed + 1}/${selectedShorts.length})...`,
                     short.title.slice(0, 35) + "..."
                 );
 
                 status.textContent =
-                    `Downloading Shorts... ${completed + 1}/${selectedShorts.length}`;
+                    `Downloading clips... ${completed + 1}/${selectedShorts.length}`;
 
                 try {
 
@@ -2113,12 +2201,12 @@ async function downloadSelected() {
                 const finishPct = Math.round((completed / selectedShorts.length) * 100);
                 batchTracker.update(
                     finishPct,
-                    `Downloading Shorts... (${completed}/${selectedShorts.length})`,
+                    `Downloading clips... (${completed}/${selectedShorts.length})`,
                     `Finished: ${short.title.slice(0, 30)}`
                 );
 
                 status.textContent =
-                    `Downloading Shorts... ${Math.min(
+                    `Downloading clips... ${Math.min(
                         completed,
                         selectedShorts.length
                     )}/${selectedShorts.length}`;
@@ -2162,7 +2250,7 @@ async function downloadSelected() {
         if (failed > 0) {
 
             status.textContent =
-                `Downloaded selected Shorts in ${elapsedSeconds.toFixed(
+                `Downloaded selected clips in ${elapsedSeconds.toFixed(
                     1
                 )}s. ${failed} failed.`;
 
@@ -2174,14 +2262,14 @@ async function downloadSelected() {
 
             status.textContent =
                 watermark
-                    ? `Downloaded ${selectedShorts.length} selected Shorts with watermark in ${elapsedSeconds.toFixed(
+                    ? `Downloaded ${selectedShorts.length} selected clips with watermark in ${elapsedSeconds.toFixed(
                         1
                     )}s. ✓`
-                    : `Downloaded ${selectedShorts.length} selected Shorts in ${elapsedSeconds.toFixed(
+                    : `Downloaded ${selectedShorts.length} selected clips in ${elapsedSeconds.toFixed(
                         1
                     )}s. ✓`;
 
-            batchTracker.complete(`All ${selectedShorts.length} Shorts downloaded in ${elapsedSeconds.toFixed(1)}s! ✓`);
+            batchTracker.complete(`All ${selectedShorts.length} clips downloaded in ${elapsedSeconds.toFixed(1)}s! ✓`);
             batchTracker.hide(6000);
 
         }
@@ -2230,7 +2318,7 @@ async function compileSelected() {
     if (selectedShorts.length < 2) {
 
         alert(
-            "Select at least 2 Shorts to compile."
+            "Select at least 2 videos to compile."
         );
 
         return;
@@ -2273,8 +2361,7 @@ async function compileSelected() {
 
         // 1. Identify which selected shorts need downloading
         const shortsToDownload = selectedShorts.filter(function (short) {
-            const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-            const inferred = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
+            const inferred = getInferredFilename(short.url);
 
             if (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) {
                 return false;
@@ -2289,7 +2376,7 @@ async function compileSelected() {
         // 2. Download missing clips concurrently
         if (shortsToDownload.length > 0) {
             compileTracker.start(`Downloading ${shortsToDownload.length} missing clips...`, 5);
-            status.textContent = `Downloading ${shortsToDownload.length} selected Shorts...`;
+            status.textContent = `Downloading ${shortsToDownload.length} selected clips...`;
 
             const MAX_CONCURRENT = 3;
             let nextIndex = 0;
@@ -2376,8 +2463,7 @@ async function compileSelected() {
         const filesToCompile = [];
         for (let i = 0; i < selectedShorts.length; i++) {
             const short = selectedShorts[i];
-            const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-            const inferred = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
+            const inferred = getInferredFilename(short.url);
 
             let resolvedName = null;
             if (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) {
@@ -2394,14 +2480,21 @@ async function compileSelected() {
 
         if (filesToCompile.length < 2) {
             throw new Error(
-                `Only ${filesToCompile.length} of ${selectedShorts.length} clips were prepared. Please ensure at least 2 Shorts are downloaded.`
+                `Only ${filesToCompile.length} of ${selectedShorts.length} clips were prepared. Please ensure at least 2 videos are downloaded.`
             );
         }
 
         const compileTaskId = "compile_" + Date.now();
+        const platformLabels = {
+            youtube: "Shorts",
+            instagram: "Reels",
+            x: "X Videos",
+            reddit: "Reddit Clips"
+        };
+        const pLabel = platformLabels[currentPlatform] || "Videos";
         const startMsg = watermark
-            ? `Compiling ${filesToCompile.length} Shorts with watermark...`
-            : `Compiling ${filesToCompile.length} Shorts...`;
+            ? `Compiling ${filesToCompile.length} ${pLabel} with watermark...`
+            : `Compiling ${filesToCompile.length} ${pLabel}...`;
 
         compileTracker.start(startMsg, 35);
         status.textContent = startMsg;
@@ -2616,6 +2709,9 @@ function createSelectionControls() {
     compileButton.disabled =
         true;
 
+    compileButton.dataset.platform =
+        currentPlatform;
+
     compileButton.addEventListener(
         "click",
         compileSelected
@@ -2668,6 +2764,23 @@ function createSelectionControls() {
         clearButton
     );
 
+    const refreshSelectionBtn = document.createElement("button");
+    refreshSelectionBtn.id = "refreshSelectionButton";
+    refreshSelectionBtn.type = "button";
+    const platformLabels = {
+        youtube: "Shorts",
+        instagram: "Reels",
+        x: "X Videos",
+        reddit: "Reddit Clips"
+    };
+    const pLbl = platformLabels[currentPlatform] || "Videos";
+    refreshSelectionBtn.innerHTML = `🔄 REFRESH ${pLbl.toUpperCase()} (GET 5 DIFFERENT CLIPS)`;
+    refreshSelectionBtn.title = "Fetch 5 different video clips for this topic";
+    refreshSelectionBtn.addEventListener("click", () => {
+        performCompilationSearch(currentPlatform || "youtube", true);
+    });
+    controls.appendChild(refreshSelectionBtn);
+
     const selProgress = document.createElement("div");
     selProgress.id = "selectionProgressContainer";
     selProgress.className = "progress-card selection-progress";
@@ -2705,8 +2818,7 @@ function renderShorts(
     shorts =
         foundShorts.map(
             function (short, index) {
-                const urlMatch = (short.url || "").match(/(?:shorts\/|v=|youtu\.be\/)([a-zA-Z0-9_-]{11})/);
-                const inferredFilename = urlMatch ? `short_${urlMatch[1]}.mp4` : null;
+                const inferredFilename = getInferredFilename(short.url);
                 const isDownloaded = Boolean(
                     (short.downloadedFilename && downloadedFiles[short.downloadedFilename]) ||
                     (inferredFilename && downloadedFiles[inferredFilename])
@@ -2771,23 +2883,63 @@ function renderShorts(
                 updateSelectionControls
             );
 
+            const cardContent =
+                document.createElement(
+                    "div"
+                );
+            cardContent.style.flex = "1";
+            cardContent.style.minWidth = "0";
+
+            let rawPlatform = "";
+            if (short && typeof short.platform === "string" && short.platform.trim()) {
+                rawPlatform = short.platform.trim().toLowerCase();
+            } else if (short && short.url) {
+                const detected = detectPlatform(short.url);
+                rawPlatform = typeof detected === "object" ? (detected.platform || "video") : String(detected || "video");
+            } else if (typeof currentPlatform === "string" && currentPlatform.trim()) {
+                rawPlatform = currentPlatform.trim().toLowerCase();
+            } else {
+                rawPlatform = "video";
+            }
+
+            const platformKey = String(rawPlatform || "video").toLowerCase();
+            card.dataset.platform = platformKey;
+
+            const badge =
+                document.createElement(
+                    "span"
+                );
+            badge.className = `short-platform-badge platform-badge-${platformKey}`;
+            const badgeLabels = {
+                youtube: "YouTube",
+                instagram: "Instagram Reel",
+                x: "X / Twitter",
+                reddit: "Reddit Video",
+                tiktok: "TikTok",
+                other: "Video"
+            };
+            badge.textContent = badgeLabels[platformKey] || (platformKey.length > 0 ? platformKey.charAt(0).toUpperCase() + platformKey.slice(1) : "Video");
+
             const title =
                 document.createElement(
                     "h3"
                 );
 
             title.textContent =
-                `${short.index + 1}. ${short.title}`;
+                `${short.index + 1}. ${short.title || "Untitled Video"}`;
 
             title.style.margin =
-                "0";
+                "4px 0 0 0";
+
+            cardContent.appendChild(badge);
+            cardContent.appendChild(title);
 
             topRow.appendChild(
                 checkbox
             );
 
             topRow.appendChild(
-                title
+                cardContent
             );
 
             const buttons =
@@ -2806,8 +2958,16 @@ function renderShorts(
             watchButton.href =
                 short.url;
 
+            const watchLabels = {
+                youtube: "WATCH SHORT",
+                instagram: "WATCH REEL",
+                x: "WATCH ON X",
+                reddit: "WATCH ON REDDIT",
+                tiktok: "WATCH ON TIKTOK"
+            };
+
             watchButton.textContent =
-                "WATCH SHORT";
+                watchLabels[platformKey] || "WATCH VIDEO";
 
             watchButton.target =
                 "_blank";
@@ -2827,7 +2987,15 @@ function renderShorts(
                 `download-button-${short.index}`;
 
             const isAlreadyDownloaded = Boolean(short.downloadedFilename && downloadedFiles[short.downloadedFilename]);
-            downloadButton.textContent = isAlreadyDownloaded ? "DOWNLOADED ✓" : "DOWNLOAD";
+            const downloadLabels = {
+                youtube: "DOWNLOAD SHORT",
+                instagram: "DOWNLOAD REEL",
+                x: "DOWNLOAD X VIDEO",
+                reddit: "DOWNLOAD REDDIT CLIP",
+                tiktok: "DOWNLOAD TIKTOK"
+            };
+            downloadButton.textContent = isAlreadyDownloaded ? "DOWNLOADED ✓" : (downloadLabels[platformKey] || "DOWNLOAD");
+            downloadButton.dataset.platform = platformKey;
             if (isAlreadyDownloaded) {
                 downloadButton.dataset.downloaded = "true";
             }
@@ -2850,8 +3018,8 @@ function renderShorts(
 
                         status.textContent =
                             getWatermark()
-                                ? "Short downloaded with watermark successfully. ✓"
-                                : "Short downloaded successfully. ✓";
+                                ? "Video downloaded with watermark successfully. ✓"
+                                : "Video downloaded successfully. ✓";
 
                     }
 
@@ -2862,7 +3030,7 @@ function renderShorts(
                             error.message;
 
                         alert(
-                            "Could not download this Short: " +
+                            "Could not download this video: " +
                             error.message
                         );
 
@@ -2912,7 +3080,7 @@ function renderShorts(
                 <div class="progress-track">
                     <div id="short-progress-fill-${short.index}" class="progress-fill" style="width: 0%;"></div>
                 </div>
-                <div id="short-progress-detail-${short.index}" class="progress-detail">Connecting to YouTube...</div>
+                <div id="short-progress-detail-${short.index}" class="progress-detail">Connecting to media source...</div>
             `;
             card.appendChild(inlineProgress);
 
@@ -2925,6 +3093,21 @@ function renderShorts(
 
     createSelectionControls();
 
+    if (btnRefreshResults) {
+        btnRefreshResults.style.display = "inline-flex";
+        btnRefreshResults.dataset.platform = currentPlatform;
+        const platformLabels = {
+            youtube: "Shorts",
+            instagram: "Reels",
+            x: "X Videos",
+            reddit: "Reddit Clips"
+        };
+        const pLabel = platformLabels[currentPlatform] || "Clips";
+        if (btnRefreshText) {
+            btnRefreshText.textContent = `REFRESH ${pLabel.toUpperCase()}`;
+        }
+    }
+
     refreshDownloadedFiles();
 
     updateSelectionControls();
@@ -2935,170 +3118,202 @@ function renderShorts(
 
 
 // --------------------------------------------------
-// SEARCH
+// MULTIPLATFORM COMPILATION SEARCH
 // --------------------------------------------------
 
-searchButton.addEventListener(
-    "click",
-    async function () {
+async function performCompilationSearch(targetPlatform = "youtube", isRefresh = false) {
+    currentPlatform = targetPlatform;
+    const userRequest = requestInput.value.trim();
+    const quantity = Number(quantityInput.value);
 
-        const userRequest =
-            requestInput.value.trim();
+    const platformLabels = {
+        youtube: "Shorts",
+        instagram: "Reels",
+        x: "X Videos",
+        reddit: "Reddit Clips"
+    };
+    const platformLabel = platformLabels[targetPlatform] || "Videos";
 
-        const quantity =
-            Number(
-                quantityInput.value
-            );
-
-        if (!userRequest) {
-
-            status.textContent =
-                "Please enter what Shorts you are looking for.";
-
-            return;
-
-        }
-
-        if (
-            !quantity ||
-            quantity < 1
-        ) {
-
-            status.textContent =
-                "Please enter a valid number of Shorts.";
-
-            return;
-
-        }
-
-        shorts = [];
-
-        downloadedFiles = {};
-
-        document
-            .querySelectorAll(
-                ".short-card"
-            )
-            .forEach(
-                function (card) {
-
-                    card.remove();
-
-                }
-            );
-
-        const oldControls =
-            document.getElementById(
-                "selectionControls"
-            );
-
-        if (oldControls) {
-
-            oldControls.remove();
-
-        }
-
-        status.textContent =
-            "Searching for Shorts...";
-
-        searchButton.disabled =
-            true;
-
-        searchButton.textContent =
-            "SEARCHING...";
-
-        try {
-
-            const response =
-                await fetch(
-                    `${BACKEND_URL}/search`,
-                    {
-
-                        method: "POST",
-
-                        headers: {
-                            "Content-Type":
-                                "application/json"
-                        },
-
-                        body: JSON.stringify({
-
-                            request:
-                                userRequest,
-
-                            quantity:
-                                quantity
-
-                        })
-
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            if (
-                !response.ok ||
-                !data.success
-            ) {
-
-                throw new Error(
-                    data.error ||
-                    "Search failed."
-                );
-
-            }
-
-            const foundShorts =
-                data.results || [];
-
-            if (
-                foundShorts.length === 0
-            ) {
-
-                status.textContent =
-                    "No relevant Shorts were found.";
-
-                return;
-
-            }
-
-            status.textContent =
-                `Found ${foundShorts.length} relevant Shorts.`;
-
-            renderShorts(
-                foundShorts
-            );
-
-            saveAppState();
-
-        }
-
-        catch (error) {
-
-            console.error(
-                "Search error:",
-                error
-            );
-
-            status.textContent =
-                "Something went wrong: " +
-                error.message;
-
-        }
-
-        finally {
-
-            searchButton.disabled =
-                false;
-
-            searchButton.textContent =
-                "FIND SHORTS";
-
-        }
-
+    if (!userRequest) {
+        status.textContent = `Please enter what ${platformLabel} you are looking for (or paste URLs).`;
+        return;
     }
-);
+
+    // Platform URL mismatch validation
+    const urlMatches = userRequest.match(/https?:\/\/[^\s]+/gi) || [];
+    if (urlMatches.length > 0) {
+        const detectedPlats = urlMatches.map(u => {
+            const d = detectPlatform(u);
+            return typeof d === "object" ? d.platform : d;
+        });
+        const hasWrongPlatform = detectedPlats.some(p => p && p !== "generic" && p !== "other" && p !== targetPlatform);
+        if (hasWrongPlatform) {
+            const wrongPlat = detectedPlats.find(p => p && p !== "generic" && p !== "other" && p !== targetPlatform);
+            const wrongName = platformLabels[wrongPlat] || wrongPlat;
+            status.textContent = `You entered links from ${wrongName}. To compile ${wrongName}, click 'COMPILE ${wrongName.toUpperCase()}', or enter ${platformLabel} links / search topics.`;
+            return;
+        }
+    }
+
+    if (!quantity || quantity < 1) {
+        status.textContent = "Please enter a valid number of clips.";
+        return;
+    }
+
+    if (!isRefresh) {
+        seenShortUrls.clear();
+        if (btnRefreshResults) {
+            btnRefreshResults.style.display = "inline-flex";
+        }
+    } else {
+        // Collect existing shorts into seenShortUrls to ensure no repeats
+        shorts.forEach((s) => {
+            if (s && s.url) seenShortUrls.add(s.url);
+        });
+    }
+
+    shorts = [];
+    downloadedFiles = {};
+    document.querySelectorAll(".short-card").forEach((card) => card.remove());
+
+    const oldControls = document.getElementById("selectionControls");
+    if (oldControls) {
+        oldControls.remove();
+    }
+
+    const platformButtons = [
+        btnCompileYoutube,
+        btnCompileInstagram,
+        btnCompileX,
+        btnCompileReddit,
+        searchButton
+    ].filter(Boolean);
+
+    platformButtons.forEach((b) => {
+        b.disabled = true;
+    });
+
+    if (btnRefreshResults) {
+        btnRefreshResults.disabled = true;
+        if (isRefresh) {
+            btnRefreshResults.classList.add("is-refreshing");
+            if (btnRefreshText) {
+                btnRefreshText.textContent = "REFRESHING...";
+            }
+        }
+    }
+
+    const activeBtn = {
+        youtube: btnCompileYoutube,
+        instagram: btnCompileInstagram,
+        x: btnCompileX,
+        reddit: btnCompileReddit
+    }[targetPlatform] || searchButton;
+
+    const originalText = activeBtn ? activeBtn.innerHTML : "";
+    if (activeBtn && !isRefresh) {
+        activeBtn.textContent = "SEARCHING...";
+    }
+
+    status.textContent = isRefresh 
+        ? `Refreshing ${platformLabel}... finding new clips...` 
+        : `Searching for ${platformLabel}...`;
+
+    try {
+        const response = await fetch(`${BACKEND_URL}/search`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                request: userRequest,
+                quantity: quantity,
+                platform: targetPlatform,
+                exclude_urls: Array.from(seenShortUrls),
+                refresh: Boolean(isRefresh)
+            })
+        });
+
+        const data = await response.json();
+        if (!response.ok || !data.success) {
+            throw new Error(data.error || "Search failed.");
+        }
+
+        // Strictly enforce platform match for all displayed results
+        const rawResults = data.results || [];
+        const foundShorts = rawResults.filter((s) => {
+            if (!s || !s.url) return false;
+            const p = (s.platform || "").toLowerCase();
+            const d = detectPlatform(s.url);
+            const dp = typeof d === "object" ? d.platform : d;
+            return p === targetPlatform || dp === targetPlatform;
+        });
+
+        if (foundShorts.length === 0) {
+            if (isRefresh) {
+                status.textContent = `No additional unique ${platformLabel} were found for this topic.`;
+            } else {
+                status.textContent = `No relevant ${platformLabel} were found.`;
+            }
+            return;
+        }
+
+        foundShorts.forEach((s) => {
+            if (s && s.url) seenShortUrls.add(s.url);
+        });
+
+        status.textContent = isRefresh
+            ? `Refreshed with ${foundShorts.length} new ${platformLabel}! ✓`
+            : `Found ${foundShorts.length} relevant ${platformLabel}.`;
+        renderShorts(foundShorts);
+        saveAppState();
+    } catch (error) {
+        console.error("Search error:", error);
+        status.textContent = "Something went wrong: " + error.message;
+    } finally {
+        platformButtons.forEach((b) => {
+            b.disabled = false;
+        });
+        if (activeBtn && originalText && !isRefresh) {
+            activeBtn.innerHTML = originalText;
+        }
+        if (btnRefreshResults) {
+            btnRefreshResults.classList.remove("is-refreshing");
+            btnRefreshResults.disabled = false;
+            const pLabel = platformLabels[currentPlatform] || "Clips";
+            if (btnRefreshText) {
+                btnRefreshText.textContent = `REFRESH ${pLabel.toUpperCase()}`;
+            }
+        }
+    }
+}
+
+if (btnRefreshResults) {
+    btnRefreshResults.addEventListener("click", () => {
+        const hasExisting = Array.isArray(shorts) && shorts.length > 0;
+        performCompilationSearch(currentPlatform || "youtube", hasExisting);
+    });
+}
+
+if (btnCompileYoutube) {
+    btnCompileYoutube.addEventListener("click", () => performCompilationSearch("youtube", false));
+}
+
+if (btnCompileInstagram) {
+    btnCompileInstagram.addEventListener("click", () => performCompilationSearch("instagram", false));
+}
+
+if (btnCompileX) {
+    btnCompileX.addEventListener("click", () => performCompilationSearch("x", false));
+}
+
+if (btnCompileReddit) {
+    btnCompileReddit.addEventListener("click", () => performCompilationSearch("reddit", false));
+}
+
+if (searchButton) {
+    searchButton.addEventListener("click", () => performCompilationSearch(currentPlatform || "youtube", false));
+}
 
 
 // --------------------------------------------------
@@ -3137,10 +3352,44 @@ async function initApp() {
         if (quantityInput) quantityInput.addEventListener("input", saveAppState);
         if (watermarkInput) watermarkInput.addEventListener("input", saveAppState);
 
+        const btnQuantityDec = document.getElementById("btnQuantityDec");
+        const btnQuantityInc = document.getElementById("btnQuantityInc");
+        if (btnQuantityDec && quantityInput) {
+            btnQuantityDec.addEventListener("click", () => {
+                const current = parseInt(quantityInput.value, 10) || 5;
+                const next = Math.max(1, current - 1);
+                quantityInput.value = next;
+                saveAppState();
+            });
+        }
+        if (btnQuantityInc && quantityInput) {
+            btnQuantityInc.addEventListener("click", () => {
+                const current = parseInt(quantityInput.value, 10) || 5;
+                const next = Math.min(50, current + 1);
+                quantityInput.value = next;
+                saveAppState();
+            });
+        }
+
         checkAndAutoStartBackend();
         checkActiveMediaTab();
         setupDirectDownloadSection();
         setupCompilationModalListeners();
+
+        if (btnRefreshResults) {
+            btnRefreshResults.style.display = "inline-flex";
+            const platformLabels = {
+                youtube: "Shorts",
+                instagram: "Reels",
+                x: "X Videos",
+                reddit: "Reddit Clips"
+            };
+            const pLbl = platformLabels[currentPlatform] || "Clips";
+            if (btnRefreshText) {
+                btnRefreshText.textContent = `REFRESH ${pLbl.toUpperCase()}`;
+            }
+        }
+
         await restoreAppState();
     } catch (err) {
         console.error("ShortBot initApp error:", err);

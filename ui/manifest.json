@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "ShortBot - AI YouTube Shorts Curator",
-  "version": "1.1.2",
-  "description": "AI-assisted video downloader and curator for Instagram Reels, YouTube Shorts, X, Reddit, and TikTok.",
+  "name": "ShortBot - AI Video Curator & Compiler",
+  "version": "1.2.0",
+  "description": "AI-assisted video downloader and compiler for Instagram Reels, YouTube Shorts, X, Reddit, and TikTok.",
   "browser_specific_settings": {
     "gecko": {
       "id": "shortbot@curator.app",

@@ -8,6 +8,8 @@ import time
 import re
 import urllib.request
 import urllib.parse
+import html
+import xml.etree.ElementTree as ET
 
 # Ensure UTF-8 output handling on Windows to prevent charmap/emoji encoding crashes
 if sys.platform == "win32":
@@ -359,11 +361,399 @@ return results;
                 pass
 
 
+def search_reddit_videos(search_query, max_results=20):
+    """Fetch genuine Reddit video posts (v.redd.it) using Reddit's public Atom search feed."""
+    encoded_q = urllib.parse.quote_plus(search_query)
+    endpoints = [
+        f"https://www.reddit.com/r/all/search.rss?q=url%3Av.redd.it+{encoded_q}&sort=relevance",
+        f"https://www.reddit.com/r/videos/search.rss?q={encoded_q}&sort=relevance",
+        f"https://www.reddit.com/search.rss?q={encoded_q}+video&sort=relevance"
+    ]
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Accept": "application/atom+xml,application/xml,text/xml,*/*;q=0.9"
+    }
+
+    results = []
+    seen = set()
+
+    for url in endpoints:
+        if len(results) >= max_results:
+            break
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                xml_data = resp.read()
+            root = ET.fromstring(xml_data)
+            for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+                t_elem = entry.find("{http://www.w3.org/2005/Atom}title")
+                l_elem = entry.find("{http://www.w3.org/2005/Atom}link")
+                if t_elem is None or l_elem is None:
+                    continue
+                title = html.unescape(t_elem.text or "").strip()
+                link = l_elem.attrib.get("href", "").strip()
+                if not link or link in seen:
+                    continue
+                seen.add(link)
+                results.append({
+                    "title": title or "Reddit Video",
+                    "url": link,
+                    "platform": "reddit"
+                })
+                if len(results) >= max_results:
+                    break
+        except Exception as e:
+            safe_print(f"Reddit video search notice: {e}")
+            continue
+
+    return results
+
+
+def search_instagram_reels(search_query, max_results=20):
+    """Search for Instagram Reels using webcmd browser automation or public search feeds."""
+    js_query = json.dumps(f"site:instagram.com/reel {search_query}")
+    browser_script = f"""
+await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent({js_query}));
+await page.waitForTimeout(2200);
+const links = await page.locator('a[href*="instagram.com"]').all();
+const results = [];
+const seen = new Set();
+for (const link of links) {{
+    let href = await link.getAttribute('href') || '';
+    if (href.includes('duckduckgo.com/l/?uddg=')) {{
+        try {{
+            const parsed = new URL(href, 'https://duckduckgo.com');
+            const target = parsed.searchParams.get('uddg');
+            if (target) href = decodeURIComponent(target);
+        }} catch(e) {{}}
+    }}
+    let text = await link.innerText() || '';
+    if (href && (href.includes('instagram.com/reel/') || href.includes('instagram.com/reels/') || href.includes('instagram.com/p/'))) {{
+        const cleanHref = href.split('?')[0].replace(/\\/$/, '') + '/';
+        if (!seen.has(cleanHref)) {{
+            seen.add(cleanHref);
+            let snippet = '';
+            try {{
+                const parent = await link.evaluateHandle(el => el.closest('article, [data-testid="result"], li'));
+                if (parent) {{
+                    const snipEl = await parent.$('[data-result="snippet"], [data-testid="result-snippet"], .result__snippet');
+                    if (snipEl) snippet = await snipEl.innerText();
+                    const h2El = await parent.$('h2, [data-testid="result-title-a"]');
+                    if (h2El && (!text || text === 'Instagram Reel')) {{
+                        const h2Text = await h2El.innerText();
+                        if (h2Text) text = h2Text;
+                    }}
+                }}
+            }} catch(e) {{}}
+            text = (text || '').replace(/\\s+/g, ' ').trim();
+            if (!text || text.includes('instagram.com') || text.length < 3) {{
+                text = 'Instagram Reel';
+            }}
+            results.push({{ title: text, snippet: (snippet || '').trim(), url: cleanHref, platform: 'instagram' }});
+        }}
+    }}
+}}
+return results;
+"""
+    browser_file = None
+    try:
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".js",
+            delete=False,
+            encoding="utf-8"
+        )
+        temp_file.write(browser_script)
+        temp_file.close()
+        browser_file = temp_file.name
+
+        command = [
+            "webcmd.cmd",
+            "--session",
+            WEBCMD_SESSION,
+            "browser",
+            "run",
+            "--file",
+            browser_file
+        ]
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **get_no_window_kwargs()
+        )
+        if process.returncode == 0:
+            data = json.loads(process.stdout.strip())
+            reels = data.get("result", [])
+            if isinstance(reels, list) and reels:
+                return reels[:max_results]
+    except Exception as e:
+        safe_print(f"Webcmd Instagram search notice: {e}")
+    finally:
+        if browser_file and os.path.exists(browser_file):
+            try:
+                os.remove(browser_file)
+            except OSError:
+                pass
+
+    # Fallback: Query Reddit for Instagram Reels crossposts
+    try:
+        encoded_q = urllib.parse.quote_plus(search_query)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "application/atom+xml,application/xml,text/xml,*/*;q=0.9"
+        }
+        endpoints = [
+            f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com%2Freel+{encoded_q}&sort=relevance",
+            f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com+{encoded_q}&sort=relevance"
+        ]
+        fallback_results = []
+        seen = set()
+        for ep in endpoints:
+            if len(fallback_results) >= max_results:
+                break
+            try:
+                req = urllib.request.Request(ep, headers=headers)
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    xml_data = resp.read()
+                root = ET.fromstring(xml_data)
+                for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+                    content = entry.find("{http://www.w3.org/2005/Atom}content")
+                    c_text = content.text if content is not None else ""
+                    link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
+                    l_href = link_elem.attrib.get("href", "") if link_elem is not None else ""
+                    
+                    combined = f"{c_text} {l_href}"
+                    matches = re.findall(r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p)/([a-zA-Z0-9_-]+)/?", combined)
+                    title = entry.find("{http://www.w3.org/2005/Atom}title")
+                    t_text = html.unescape(title.text or "Instagram Reel").strip() if title is not None else "Instagram Reel"
+                    for code in matches:
+                        clean_m = f"https://www.instagram.com/reel/{code}/"
+                        if clean_m not in seen:
+                            seen.add(clean_m)
+                            fallback_results.append({
+                                "title": t_text,
+                                "url": clean_m,
+                                "platform": "instagram"
+                            })
+                            if len(fallback_results) >= max_results:
+                                break
+            except Exception:
+                continue
+        if fallback_results:
+            return fallback_results
+    except Exception:
+        pass
+
+    return []
+
+
+def search_x_videos(search_query, max_results=20):
+    """Search for X / Twitter video posts using webcmd browser automation or public search feeds."""
+    js_query = json.dumps(f"site:x.com video {search_query}")
+    browser_script = f"""
+await page.goto('https://duckduckgo.com/?q=' + encodeURIComponent({js_query}));
+await page.waitForTimeout(2200);
+const links = await page.locator('a[href*="/status/"], a[href*="x.com"], a[href*="twitter.com"]').all();
+const results = [];
+const seen = new Set();
+for (const link of links) {{
+    let href = await link.getAttribute('href') || '';
+    if (href.includes('duckduckgo.com/l/?uddg=')) {{
+        try {{
+            const parsed = new URL(href, 'https://duckduckgo.com');
+            const target = parsed.searchParams.get('uddg');
+            if (target) href = decodeURIComponent(target);
+        }} catch(e) {{}}
+    }}
+    let text = await link.innerText() || '';
+    if (href && (href.includes('x.com/') || href.includes('twitter.com/')) && href.includes('/status/')) {{
+        const cleanHref = href.split('?')[0];
+        if (!seen.has(cleanHref)) {{
+            seen.add(cleanHref);
+            let snippet = '';
+            try {{
+                const parent = await link.evaluateHandle(el => el.closest('article, [data-testid="result"], li'));
+                if (parent) {{
+                    const snipEl = await parent.$('[data-result="snippet"], [data-testid="result-snippet"], .result__snippet');
+                    if (snipEl) snippet = await snipEl.innerText();
+                    const h2El = await parent.$('h2, [data-testid="result-title-a"]');
+                    if (h2El && (!text || text === 'X Video Post')) {{
+                        const h2Text = await h2El.innerText();
+                        if (h2Text) text = h2Text;
+                    }}
+                }}
+            }} catch(e) {{}}
+            text = (text || '').replace(/\\s+/g, ' ').trim();
+            if (!text || text.includes('x.com') || text.includes('twitter.com') || text.length < 3) {{
+                text = 'X Video Post';
+            }}
+            results.push({{ title: text, snippet: (snippet || '').trim(), url: cleanHref, platform: 'x' }});
+        }}
+    }}
+}}
+return results;
+"""
+    browser_file = None
+    try:
+        temp_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".js",
+            delete=False,
+            encoding="utf-8"
+        )
+        temp_file.write(browser_script)
+        temp_file.close()
+        browser_file = temp_file.name
+
+        command = [
+            "webcmd.cmd",
+            "--session",
+            WEBCMD_SESSION,
+            "browser",
+            "run",
+            "--file",
+            browser_file
+        ]
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            **get_no_window_kwargs()
+        )
+        if process.returncode == 0:
+            data = json.loads(process.stdout.strip())
+            posts = data.get("result", [])
+            if isinstance(posts, list) and posts:
+                return posts[:max_results]
+    except Exception as e:
+        safe_print(f"Webcmd X search notice: {e}")
+    finally:
+        if browser_file and os.path.exists(browser_file):
+            try:
+                os.remove(browser_file)
+            except OSError:
+                pass
+
+    # Fallback: Query Reddit for X/Twitter video crossposts
+    try:
+        encoded_q = urllib.parse.quote_plus(search_query)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Accept": "application/atom+xml,application/xml,text/xml,*/*;q=0.9"
+        }
+        endpoints = [
+            f"https://www.reddit.com/r/all/search.rss?q=url%3Atwitter.com+{encoded_q}+video&sort=relevance",
+            f"https://www.reddit.com/r/all/search.rss?q=url%3Ax.com+{encoded_q}+video&sort=relevance"
+        ]
+        fallback_results = []
+        seen = set()
+        for ep in endpoints:
+            if len(fallback_results) >= max_results:
+                break
+            try:
+                req = urllib.request.Request(ep, headers=headers)
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    xml_data = resp.read()
+                root = ET.fromstring(xml_data)
+                for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
+                    content = entry.find("{http://www.w3.org/2005/Atom}content")
+                    c_text = content.text if content is not None else ""
+                    matches = re.findall(r"https?://(?:www\.)?(?:twitter|x)\.com/[^/\s]+/status/\d+", c_text)
+                    title = entry.find("{http://www.w3.org/2005/Atom}title")
+                    t_text = html.unescape(title.text or "X Video").strip() if title is not None else "X Video"
+                    for m in matches:
+                        clean_m = m.split("?")[0]
+                        if clean_m not in seen:
+                            seen.add(clean_m)
+                            fallback_results.append({
+                                "title": t_text,
+                                "url": clean_m,
+                                "platform": "x"
+                            })
+                            if len(fallback_results) >= max_results:
+                                break
+            except Exception:
+                continue
+        if fallback_results:
+            return fallback_results
+    except Exception:
+        pass
+
+    return []
+
+
+def parse_direct_media_urls(user_input):
+    """Detect if the user pasted direct media URLs from YouTube, Instagram, X, Reddit, or TikTok."""
+    urls = re.findall(r"https?://[^\s,]+", user_input)
+    if not urls:
+        return []
+    results = []
+    seen = set()
+    for raw_u in urls:
+        clean_u = raw_u.strip().rstrip(".,;!?'\"")
+        if clean_u in seen:
+            continue
+        seen.add(clean_u)
+
+        p = "other"
+        title = "Pasted Video"
+        if "youtube.com" in clean_u or "youtu.be" in clean_u:
+            p = "youtube"
+            m = re.search(r"(?:shorts/|v=|youtu\.be/)([a-zA-Z0-9_-]{11})", clean_u)
+            title = f"YouTube Short ({m.group(1)})" if m else "YouTube Video"
+        elif "instagram.com" in clean_u:
+            p = "instagram"
+            m = re.search(r"instagram\.com/(?:reel|reels|p)/([a-zA-Z0-9_-]+)", clean_u)
+            title = f"Instagram Reel ({m.group(1)})" if m else "Instagram Video"
+        elif "twitter.com" in clean_u or "x.com" in clean_u:
+            p = "x"
+            m = re.search(r"(?:twitter|x)\.com/[^/]+/status/(\d+)", clean_u)
+            title = f"X Video ({m.group(1)})" if m else "X Video Post"
+        elif "reddit.com" in clean_u or "v.redd.it" in clean_u:
+            p = "reddit"
+            m = re.search(r"reddit\.com/r/([^/]+)/comments/([a-zA-Z0-9]+)", clean_u)
+            title = f"Reddit Clip (r/{m.group(1)})" if m else "Reddit Video"
+        elif "tiktok.com" in clean_u:
+            p = "tiktok"
+            title = "TikTok Video"
+
+        results.append({
+            "title": title,
+            "url": clean_u,
+            "platform": p
+        })
+    return results
+
+
+def is_valid_url_for_platform(url, target_platform):
+    """Enforce strict domain isolation per requested platform."""
+    if not url or not isinstance(url, str):
+        return False
+    u = url.lower()
+    p = str(target_platform).strip().lower()
+    if p == "instagram":
+        return ("instagram.com/reel/" in u or "instagram.com/reels/" in u or "instagram.com/p/" in u)
+    elif p in ("x", "twitter"):
+        return ("x.com/" in u or "twitter.com/" in u) and "/status/" in u
+    elif p == "reddit":
+        return ("reddit.com/r/" in u and "/comments/" in u) or "v.redd.it/" in u
+    elif p == "youtube":
+        return ("youtube.com/shorts/" in u or "youtu.be/" in u)
+    elif p == "tiktok":
+        return "tiktok.com/" in u
+    return False
+
+
 # ============================================================
-# FIND SHORTS
+# FIND SHORTS & VIDEOS (MULTIPLATFORM)
 # ============================================================
 
-def find_shorts(user_request, quantity):
+def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, refresh=False):
 
     # --------------------------------------------------------
     # VALIDATE INPUT
@@ -376,6 +766,31 @@ def find_shorts(user_request, quantity):
         raise ValueError("quantity must be an integer greater than 0.")
 
     user_request = user_request.strip()
+    platform = str(platform).strip().lower() or "youtube"
+
+    seen_urls = set()
+    if exclude_urls:
+        for u in exclude_urls:
+            if isinstance(u, str) and u.strip():
+                seen_urls.add(u.strip())
+        if seen_urls:
+            safe_print(f"Refresh mode: excluding {len(seen_urls)} previously seen {platform} videos.")
+
+    # Check for direct pasted URLs first - strictly only accept URLs matching the requested platform
+    direct_items = parse_direct_media_urls(user_request)
+    if direct_items:
+        matching_platform_items = [
+            item for item in direct_items
+            if is_valid_url_for_platform(item.get("url"), platform) and item.get("url") not in seen_urls
+        ]
+        if matching_platform_items:
+            safe_print(f"Direct {platform} URLs detected in prompt: {len(matching_platform_items)} videos.")
+            return matching_platform_items[:quantity]
+        else:
+            other_plats = list({item.get("platform") for item in direct_items if item.get("platform") != "other"})
+            plat_str = ", ".join(other_plats).title() if other_plats else "other platforms"
+            safe_print(f"Pasted URLs belong to {plat_str}, but requested platform is {platform}. Preserving strict platform isolation.")
+            return []
 
 
     # ========================================================
@@ -409,7 +824,12 @@ def find_shorts(user_request, quantity):
     if not base_search_query:
         base_search_query = user_request.strip()
 
-    print("Search query:", base_search_query)
+    if platform != "youtube":
+        cleaned = re.sub(r'(?i)\bshorts\b', '', base_search_query).strip()
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        base_search_query = cleaned or user_request.strip()
+
+    print(f"Search query ({platform}):", base_search_query)
     print()
 
 
@@ -417,22 +837,72 @@ def find_shorts(user_request, quantity):
     # SEARCH QUERY VARIATIONS
     # ========================================================
 
-    # We start with the plain search.
-    # Extra searches are only used if we still need results.
-
-    search_queries = [
-        base_search_query,
-        base_search_query + " funny moments",
-        base_search_query + " clips",
-    ]
+    if refresh or seen_urls:
+        if platform == "youtube":
+            search_queries = [
+                base_search_query + " compilation",
+                base_search_query + " highlights",
+                base_search_query + " part 2",
+                base_search_query + " clips",
+                base_search_query + " funny moments",
+                base_search_query + " best",
+                base_search_query,
+            ]
+        elif platform == "reddit":
+            search_queries = [
+                base_search_query + " highlights",
+                base_search_query + " clip",
+                base_search_query + " moments",
+                base_search_query + " video",
+                base_search_query,
+            ]
+        elif platform == "instagram":
+            search_queries = [
+                base_search_query + " viral",
+                base_search_query + " reel",
+                base_search_query + " trending",
+                base_search_query + " funny",
+                base_search_query + " clips",
+                base_search_query,
+            ]
+        else:  # x / twitter
+            search_queries = [
+                base_search_query + " clip",
+                base_search_query + " moments",
+                base_search_query + " video",
+                base_search_query + " highlights",
+                base_search_query,
+            ]
+    else:
+        if platform == "youtube":
+            search_queries = [
+                base_search_query,
+                base_search_query + " funny moments",
+                base_search_query + " clips",
+            ]
+        elif platform == "reddit":
+            search_queries = [
+                base_search_query,
+                base_search_query + " video",
+                base_search_query + " moments",
+            ]
+        elif platform == "instagram":
+            search_queries = [
+                base_search_query,
+                base_search_query + " viral",
+                base_search_query + " funny",
+            ]
+        else:  # x / twitter
+            search_queries = [
+                base_search_query,
+                base_search_query + " video",
+                base_search_query + " clip",
+            ]
 
 
     # ========================================================
     # STORAGE
     # ========================================================
-
-    # All Shorts we've ever seen.
-    seen_urls = set()
 
     # Shorts that Gemma classified as relevant.
     relevant_shorts = []
@@ -442,7 +912,8 @@ def find_shorts(user_request, quantity):
     # SEARCH LOOP
     # ========================================================
 
-    for search_number in range(1, MAX_SEARCHES + 1):
+    max_search_rounds = max(MAX_SEARCHES + (3 if (refresh or seen_urls) else 0), len(search_queries))
+    for search_number in range(1, max_search_rounds + 1):
 
         # ----------------------------------------------------
         # STOP AS SOON AS WE HAVE ENOUGH
@@ -483,26 +954,41 @@ def find_shorts(user_request, quantity):
 
 
         # ====================================================
-        # EXECUTE SEARCH (SHORTS SHELF -> YT-DLP -> WEBCMD)
+        # EXECUTE SEARCH (MULTIPLATFORM ROUTING)
         # ====================================================
 
         target_count = max(quantity * 2, 20)
-        print("Searching YouTube (native Shorts shelf)...")
-        shorts = search_youtube_shorts_shelf(search_query, max_results=target_count)
+        shorts = []
 
-        if not shorts:
-            print("Shorts shelf returned no results. Falling back to yt-dlp fast search...")
-            shorts = search_youtube_fast(search_query, max_results=target_count)
+        if platform == "reddit":
+            print("Searching Reddit for video posts...")
+            shorts = search_reddit_videos(search_query, max_results=target_count)
+        elif platform == "instagram":
+            print("Searching Instagram for Reels...")
+            shorts = search_instagram_reels(search_query, max_results=target_count)
+        elif platform in ("x", "twitter"):
+            print("Searching X / Twitter for video posts...")
+            shorts = search_x_videos(search_query, max_results=target_count)
+        else:
+            print("Searching YouTube (native Shorts shelf)...")
+            shorts = search_youtube_shorts_shelf(search_query, max_results=target_count)
 
-        if not shorts:
-            print("Fast engine returned no results. Falling back to webcmd browser...")
-            shorts = search_youtube_webcmd(search_query)
+            if not shorts:
+                print("Shorts shelf returned no results. Falling back to yt-dlp fast search...")
+                shorts = search_youtube_fast(search_query, max_results=target_count)
 
+            if not shorts:
+                print("Fast engine returned no results. Falling back to webcmd browser...")
+                shorts = search_youtube_webcmd(search_query)
+
+        for s in shorts:
+            if isinstance(s, dict) and "platform" not in s:
+                s["platform"] = platform
 
         print(
             "Found",
             len(shorts),
-            "Shorts."
+            f"{platform.capitalize()} videos."
         )
 
         print()
@@ -521,38 +1007,39 @@ def find_shorts(user_request, quantity):
 
             url = short.get("url")
 
-            if not url:
+            if not url or url in seen_urls:
                 continue
 
-            if url in seen_urls:
+            # STRICT PLATFORM DOMAIN ISOLATION
+            if not is_valid_url_for_platform(url, platform):
                 continue
 
             seen_urls.add(url)
-
+            short["platform"] = platform
             new_shorts.append(short)
 
 
         print(
-            "New Shorts:",
+            "New videos:",
             len(new_shorts)
         )
 
         print()
 
 
-        # If YouTube returned nothing new,
+        # If search returned nothing new,
         # continue to next query.
         if not new_shorts:
 
             print(
-                "No new Shorts from this search."
+                "No new videos from this search."
             )
 
             continue
 
 
         # ====================================================
-        # SHOW NEW SHORTS
+        # SHOW NEW VIDEOS
         # ====================================================
 
         for i, short in enumerate(
@@ -561,65 +1048,18 @@ def find_shorts(user_request, quantity):
         ):
 
             safe_print(
-                f"{i}. {short.get('title', 'Untitled')}"
+                f"{i}. [{short.get('platform', platform).upper()}] {short.get('title', 'Untitled')}"
             )
 
         print()
 
 
         # ====================================================
-        # BATCH GEMMA CLASSIFIER / DIRECT FALLBACK
+        # RELEVANCE CLASSIFICATION (LOCAL RULE & SEMANTIC NLP FILTER)
         # ====================================================
-
-        if is_fallback:
-            print("Direct Search Mode: accepting results directly without Ollama filtering...")
-            existing_urls = {item.get("url") for item in relevant_shorts}
-            for short in new_shorts:
-                url = short.get("url")
-                if url and url not in existing_urls:
-                    relevant_shorts.append(short)
-                    existing_urls.add(url)
-                if len(relevant_shorts) >= quantity:
-                    break
-            if len(relevant_shorts) >= quantity:
-                break
-            continue
-
-        print(
-            "Sending new Shorts to Gemma..."
-        )
-
-        print()
-
-
-        numbered_titles = []
-
-        for i, short in enumerate(
-            new_shorts,
-            start=1
-        ):
-
-            title = short.get(
-                "title",
-                ""
-            )
-
-            numbered_titles.append(
-                f"{i}. {title}"
-            )
-
-
-        titles_text = "\n".join(
-            numbered_titles
-        )
-
-
-        # ====================================================
-        # RELEVANCE CLASSIFICATION (AI ENGINE - CLOUD / LOCAL NLP)
-        # ====================================================
-        candidate_titles = [s.get("title", "") for s in new_shorts]
-        relevant_numbers = batch_classify_relevance(user_request, plan, candidate_titles)
-        print(f"AI Engine accepted {len(relevant_numbers)} relevant Shorts from {len(new_shorts)} candidates.")
+        print(f"Applying Local Rule & Semantic NLP Filter to {len(new_shorts)} {platform.capitalize()} candidates...")
+        relevant_numbers = batch_classify_relevance(user_request, plan, new_shorts, platform=platform)
+        print(f"NLP Filter accepted {len(relevant_numbers)} relevant {platform.capitalize()} videos from {len(new_shorts)} candidates.")
 
 
         # ====================================================
@@ -654,7 +1094,10 @@ def find_shorts(user_request, quantity):
             if url in existing_urls:
                 continue
 
+            if not is_valid_url_for_platform(url, platform):
+                continue
 
+            short["platform"] = platform
             relevant_shorts.append(
                 short
             )
@@ -729,7 +1172,12 @@ def find_shorts(user_request, quantity):
     # FINAL RESULTS
     # ========================================================
 
-    final_results = relevant_shorts[:quantity]
+    final_results = [
+        s for s in relevant_shorts
+        if is_valid_url_for_platform(s.get("url"), platform)
+    ][:quantity]
+    for s in final_results:
+        s["platform"] = platform
 
 
     print()
