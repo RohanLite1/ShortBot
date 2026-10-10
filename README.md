@@ -39,7 +39,7 @@ ShortBot/
 │   ├── app.js                       # Extension logic and native messaging bridge
 │   ├── index.html                   # Dark Mode UI
 │   ├── style.css                    # Century Gothic styling
-│   ├── manifest.json                # WebExtension manifest (v1.2.0)
+│   ├── manifest.json                # WebExtension manifest (v1.2.1)
 │   └── icons/                       # Extension icons
 ├── docs/                            # Documentation and benchmarks
 │   └── TIMINGS_AND_BENCHMARKS.md    # Performance benchmarks

@@ -5,6 +5,7 @@ import os
 import subprocess
 import urllib.request
 import urllib.error
+import time
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_SCRIPT = os.path.join(BASE_DIR, "backend.py")
@@ -20,9 +21,18 @@ def is_backend_running():
         return False
 
 
+_last_start_attempt = 0
+
+
 def start_backend():
+    global _last_start_attempt
     if is_backend_running():
         return True, "already_running"
+
+    # Debounce if start was initiated less than 4 seconds ago
+    if time.time() - _last_start_attempt < 4.0:
+        return True, "starting"
+    _last_start_attempt = time.time()
 
     # 1. Check for standalone compiled executable
     standalone_exe = os.path.join(BASE_DIR, "shortbot-engine.exe")
@@ -80,7 +90,7 @@ def start_backend():
                     pythonw_exe = python_exe
             try:
                 subprocess.Popen(
-                    [pythonw_exe, BACKEND_SCRIPT],
+                    [pythonw_exe, BACKEND_SCRIPT, "--silent"],
                     cwd=BASE_DIR,
                     creationflags=0x08000000 | 0x00000008 | 0x01000000,
                     stdin=subprocess.DEVNULL,
@@ -91,7 +101,6 @@ def start_backend():
                 return False, str(e)
 
     # Wait up to 3 seconds for backend to become available
-    import time
     for _ in range(15):
         time.sleep(0.2)
         if is_backend_running():

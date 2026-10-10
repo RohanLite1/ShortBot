@@ -31,9 +31,9 @@ def safe_print(*args, **kwargs):
             pass
 
 
-def parse_request(user_request):
+def parse_request(user_request: str, platform: str = "youtube"):
     """Parse user request into structured search plan using AI engine (Cloud Gemini or local NLP)."""
-    return parse_search_request(user_request)
+    return parse_search_request(user_request, platform=platform)
 
 
 if __name__ == "__main__":

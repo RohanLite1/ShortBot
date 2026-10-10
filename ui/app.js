@@ -538,6 +538,7 @@ async function checkAndAutoStartBackend() {
 
     // Auto-detect newly installed companion engine in background
     if (!window._enginePollingInterval) {
+        let autoStartAttempts = 0;
         window._enginePollingInterval = setInterval(async () => {
             const isUp = await ping();
             if (isUp) {
@@ -546,11 +547,12 @@ async function checkAndAutoStartBackend() {
                     clearInterval(window._enginePollingInterval);
                     window._enginePollingInterval = null;
                 }
-            } else {
+            } else if (autoStartAttempts < 2) {
+                autoStartAttempts++;
                 // If native messaging host was just installed, trigger start
                 const hostRes = await sendNativeHostMessage({ action: "start" });
                 if (hostRes) {
-                    await new Promise((r) => setTimeout(r, 1000));
+                    await new Promise((r) => setTimeout(r, 1500));
                     const nextUp = await ping();
                     if (nextUp) {
                         updateBadgeFromHealth(nextUp);

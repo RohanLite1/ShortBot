@@ -156,9 +156,10 @@ STYLE_KEYWORDS = {
 }
 
 
-def local_parse_request(user_request: str) -> dict:
+def local_parse_request(user_request: str, platform: str = "youtube") -> dict:
     """Intelligently parse user search prompt without calling any external LLM."""
     req_clean = user_request.strip()
+    platform = str(platform).strip().lower() or "youtube"
     
     # 1. Detect requested styles
     detected_styles = []
@@ -179,20 +180,22 @@ def local_parse_request(user_request: str) -> dict:
     if not cleaned_query:
         cleaned_query = user_request.strip()
 
-    # Formulate optimal YouTube search query
-    # If the user didn't mention 'Shorts', add it for YouTube Shorts shelf targeting
+    # Formulate optimal search query tailored to requested platform
     search_query = cleaned_query
-    if "short" not in search_query.lower():
-        search_query = f"{cleaned_query} Shorts"
+    if platform == "youtube":
+        if "short" not in search_query.lower():
+            search_query = f"{cleaned_query} Shorts"
+    else:
+        # Strip any extraneous "shorts" or "short" keywords if user typed them for other platforms
+        cleaned = re.sub(r'(?i)\bshorts?\b', '', search_query).strip()
+        search_query = re.sub(r'\s+', ' ', cleaned).strip() or cleaned_query
 
     # Identify potential named subjects (e.g. capitalized phrases or key nouns)
     subjects = []
-    # Match quoted terms first
     quoted = re.findall(r'["\']([^"\']+)["\']', user_request)
     if quoted:
         subjects.extend(quoted)
     else:
-        # Check for 'and' pairs or character names
         and_match = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\s+(?:and|vs\.?|with)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b', user_request)
         if and_match:
             subjects.extend([and_match.group(1), and_match.group(2)])
@@ -202,21 +205,42 @@ def local_parse_request(user_request: str) -> dict:
         "topic": cleaned_query,
         "subjects": subjects,
         "style": detected_styles,
+        "platform": platform,
         "engine": "local_nlp"
     }
 
 
-def parse_search_request(user_request: str) -> dict:
+def parse_search_request(user_request: str, platform: str = "youtube") -> dict:
     """Parse search request using Cloud Gemini Flash if key available, else local NLP engine."""
+    platform = str(platform).strip().lower() or "youtube"
     api_key = get_gemini_api_key()
     if api_key:
+        platform_curator_roles = {
+            "youtube": "a YouTube Shorts curator",
+            "instagram": "an Instagram Reels curator",
+            "x": "an X / Twitter video curator",
+            "twitter": "an X / Twitter video curator",
+            "reddit": "a Reddit video clips curator",
+        }
+        role_desc = platform_curator_roles.get(platform, f"a {platform.capitalize()} video curator")
+        
+        platform_query_hints = {
+            "youtube": "concise youtube search query including key characters/topic",
+            "instagram": "concise instagram reels search query focusing on reel topic and characters",
+            "x": "concise search query for viral X / Twitter video posts",
+            "twitter": "concise search query for viral X / Twitter video posts",
+            "reddit": "concise search query for top Reddit video posts and clips",
+        }
+        hint_desc = platform_query_hints.get(platform, f"concise search query for {platform} videos")
+
         prompt = f"""
-You are the search query planning engine for a YouTube Shorts curator.
+You are the search query planning engine for {role_desc}.
 USER REQUEST: {user_request}
+TARGET PLATFORM: {platform.upper()}
 
 Return ONLY a valid JSON object matching this schema:
 {{
-  "search_query": "concise youtube search query including key characters/topic",
+  "search_query": "{hint_desc}",
   "topic": "main topic",
   "subjects": ["subject1", "subject2"],
   "style": ["funny", "highlights"]
@@ -225,7 +249,6 @@ Return ONLY a valid JSON object matching this schema:
         res = call_gemini_flash(prompt, json_mode=True, timeout=5)
         if res:
             try:
-                # Strip markdown fences if present
                 clean_res = res
                 if clean_res.startswith("```"):
                     lines = clean_res.splitlines()
@@ -233,12 +256,17 @@ Return ONLY a valid JSON object matching this schema:
                 parsed = json.loads(clean_res)
                 if isinstance(parsed, dict) and "search_query" in parsed:
                     parsed["engine"] = "gemini_cloud"
+                    parsed["platform"] = platform
+                    if platform != "youtube":
+                        sq = parsed.get("search_query", "")
+                        sq_clean = re.sub(r'(?i)\bshorts?\b', '', sq).strip()
+                        parsed["search_query"] = re.sub(r'\s+', ' ', sq_clean) or sq
                     return parsed
             except Exception as e:
                 print(f"[AI Engine] Error parsing Gemini JSON: {e}")
 
     # Zero-dependency local fallback
-    return local_parse_request(user_request)
+    return local_parse_request(user_request, platform=platform)
 
 
 def compute_title_relevance_score(
@@ -362,21 +390,25 @@ def batch_classify_relevance(
         )
         scored.append((i, score, title))
 
-    # Strict threshold: 0.35
-    relevant = [i for i, s, t in scored if s >= 0.35]
+    # Adaptive threshold: 0.18 for X and Reddit (short social captions/handles), 0.35 for standard video platforms
+    threshold = 0.18 if platform in ("x", "twitter", "reddit") else 0.35
+    relevant = [i for i, s, t in scored if s >= threshold]
 
     accepted_count = len(relevant)
     rejected_count = len(norm_candidates) - accepted_count
     print(f"[NLP Filter] Evaluated {len(norm_candidates)} {platform.capitalize()} candidates: {accepted_count} accepted, {rejected_count} off-topic rejected.")
 
-    # Fallback safety: If query was extremely specific and 0 candidates met threshold,
-    # pick the top highest-scoring candidates above baseline (> 0.15) rather than stalling
-    if not relevant and scored:
+    # Fallback safety: If query was specific and fewer candidates met threshold,
+    # pick the top highest-scoring candidates above baseline (> 0.05) rather than stalling
+    if len(relevant) < 3 and scored:
         scored_sorted = sorted(scored, key=lambda x: x[1], reverse=True)
-        top_candidates = [x[0] for x in scored_sorted[:max(2, len(norm_candidates) // 2)] if x[1] > 0.15]
+        top_candidates = [x[0] for x in scored_sorted if x[1] > 0.05 and x[0] not in relevant]
+        for tc in top_candidates:
+            relevant.append(tc)
+            if len(relevant) >= max(3, len(norm_candidates) // 2):
+                break
         if top_candidates:
-            print(f"[NLP Filter] Relaxed threshold fallback: accepted top {len(top_candidates)} closest candidates.")
-            return top_candidates
+            print(f"[NLP Filter] Relaxed threshold fallback: accepted top {len(relevant)} candidates.")
 
     return relevant
 

@@ -1818,10 +1818,16 @@ if __name__ == "__main__":
         print("[ShortBot] FFmpeg not found on startup. Initiating automatic background provisioning...")
         start_ffmpeg_download_in_background()
 
-    app.run(
-        host="127.0.0.1",
-        port=5000,
-        debug=False,
-        use_reloader=False,
-        threaded=True
-    )
+
+    try:
+        app.run(
+            host="127.0.0.1",
+            port=5000,
+            debug=False,
+            use_reloader=False,
+            threaded=True
+        )
+    except Exception as e:
+        print(f"[ShortBot Error] Server exited: {e}")
+        import traceback
+        traceback.print_exc()

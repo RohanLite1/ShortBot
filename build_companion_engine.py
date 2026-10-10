@@ -90,6 +90,7 @@ def build():
         "--name", "ShortBot-Engine",
         "--distpath", DIST_DIR,
         "--add-data", f"{os.path.join(BASE_DIR, 'ui')};ui",
+        "--add-data", f"{os.path.join(BASE_DIR, 'browser_search.js')};.",
         "--hidden-import", "requests",
         "--hidden-import", "yt_dlp",
         "--hidden-import", "flask",
@@ -100,6 +101,11 @@ def build():
         os.path.join(BASE_DIR, "backend.py")
     ]
     subprocess.run(cmd_backend, cwd=BASE_DIR, check=True)
+
+    # Copy browser_search.js directly into output folder as well
+    src_js = os.path.join(BASE_DIR, "browser_search.js")
+    if os.path.isfile(src_js):
+        shutil.copy2(src_js, os.path.join(OUTPUT_DIR, "browser_search.js"))
 
     # Rename ShortBot-Engine.exe to shortbot-engine.exe if needed
     main_exe = os.path.join(OUTPUT_DIR, "ShortBot-Engine.exe")
@@ -205,7 +211,11 @@ reg add "HKCU\\Software\\Microsoft\\Edge\\NativeMessagingHosts\\com.shortbot.bac
 reg add "HKCU\\Software\\Google\\Chrome\\NativeMessagingHosts\\com.shortbot.backend" /ve /t REG_SZ /d "%APP_DIR%\\com.shortbot.backend.json" /f >nul 2>&1
 echo [OK] Registered with Edge and Chrome.
 
-:: 5. Start engine silently
+:: 5. Register in Windows Autostart (Startup on boot)
+reg add "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" /v "ShortBotEngine" /t REG_SZ /d "\"%APP_DIR%\\ShortBot-Engine.exe\" --autostart" /f >nul 2>&1
+echo [OK] Registered in Windows Startup (Autostarts on boot).
+
+:: 6. Start engine
 if exist "%APP_DIR%\\shortbot-engine.exe" (
     start "" "%APP_DIR%\\shortbot-engine.exe"
 ) else (
@@ -215,7 +225,8 @@ if exist "%APP_DIR%\\shortbot-engine.exe" (
 echo.
 echo ============================================================
 echo   Installation Complete!
-echo   Open Firefox or Edge to start using ShortBot.
+echo   ShortBot is now registered and will start automatically with Windows.
+echo   Open Firefox, Chrome, or Edge to start using ShortBot.
 echo ============================================================
 ping -n 3 127.0.0.1 >nul
 
@@ -256,7 +267,10 @@ ping -n 3 127.0.0.1 >nul
         if os.path.isfile(setup_lite):
             print(f"  + SUCCESS (Lite): {setup_lite} ({os.path.getsize(setup_lite)/(1024*1024):.1f} MB)")
         if os.path.isfile(setup_full):
+            setup_alias = os.path.join(DIST_DIR, "ShortBot-Engine-Setup.exe")
+            shutil.copy2(setup_full, setup_alias)
             print(f"  + SUCCESS (Full): {setup_full} ({os.path.getsize(setup_full)/(1024*1024):.1f} MB)")
+            print(f"  + ALIAS CREATED:  {setup_alias}")
     else:
         print("  ! Note: ISCC.exe not found. Setup wizard not compiled.")
 
@@ -285,6 +299,20 @@ ping -n 3 127.0.0.1 >nul
                 abs_p = os.path.join(root, file)
                 rel_p = os.path.relpath(abs_p, DIST_DIR)
                 z.write(abs_p, rel_p)
+
+    # Also update organized release folders
+    installers_dir = os.path.join(DIST_DIR, "installers")
+    portable_dir = os.path.join(DIST_DIR, "portable")
+    os.makedirs(installers_dir, exist_ok=True)
+    os.makedirs(portable_dir, exist_ok=True)
+    if os.path.isfile(setup_full):
+        shutil.copy2(setup_full, os.path.join(installers_dir, "ShortBot-v1.2.1-Setup-Full.exe"))
+    if os.path.isfile(setup_lite):
+        shutil.copy2(setup_lite, os.path.join(installers_dir, "ShortBot-v1.2.1-Setup-Lite.exe"))
+    if os.path.isfile(zip_full):
+        shutil.copy2(zip_full, os.path.join(portable_dir, "ShortBot-v1.2.1-Portable-Full.zip"))
+    if os.path.isfile(zip_light):
+        shutil.copy2(zip_light, os.path.join(portable_dir, "ShortBot-v1.2.1-Portable-Lite.zip"))
 
     size_light_mb = os.path.getsize(zip_light) / (1024 * 1024)
     size_full_mb = os.path.getsize(zip_full) / (1024 * 1024)

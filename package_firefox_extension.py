@@ -5,11 +5,12 @@ import shutil
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 UI_DIR = os.path.join(BASE_DIR, "ui")
 DIST_DIR = os.path.join(BASE_DIR, "dist")
+EXT_DIR = os.path.join(DIST_DIR, "extension")
 
 def package_firefox_extension():
-    os.makedirs(DIST_DIR, exist_ok=True)
-    xpi_path = os.path.join(DIST_DIR, "shortbot-firefox.xpi")
-    zip_path = os.path.join(DIST_DIR, "shortbot-firefox.zip")
+    os.makedirs(EXT_DIR, exist_ok=True)
+    xpi_path = os.path.join(EXT_DIR, "ShortBot-v1.2.1-Firefox.xpi")
+    zip_path = os.path.join(EXT_DIR, "ShortBot-v1.2.1-WebExtension.zip")
     
     for f in (xpi_path, zip_path):
         if os.path.exists(f):
@@ -34,6 +35,10 @@ def package_firefox_extension():
 
     # Also keep a .zip copy
     shutil.copyfile(xpi_path, zip_path)
+
+    # Maintain release aliases in root DIST_DIR
+    shutil.copyfile(xpi_path, os.path.join(DIST_DIR, "shortbot-firefox.xpi"))
+    shutil.copyfile(zip_path, os.path.join(DIST_DIR, "shortbot-firefox.zip"))
     
     size_kb = os.path.getsize(xpi_path) / 1024
     print("\n" + "=" * 60)

@@ -2,7 +2,7 @@
 ; Inno Setup 6+ script - 100% Native, No Batch Scripts Required
 
 #define MyAppName "ShortBot Companion Engine"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.2.1"
 #define MyAppPublisher "ShortBot"
 #define MyAppURL "https://github.com/RohanLite1/ShortBot"
 #define MyAppExeName "ShortBot-Engine.exe"
@@ -41,8 +41,8 @@ RestartApplications=no
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
-Name: "startwithwindows"; Description: "&Start ShortBot Companion Engine automatically when Windows boots"; Flags: checkedonce
-Name: "desktopicon"; Description: "Create a &desktop shortcut for ShortBot Engine"; Flags: unchecked
+Name: "startwithwindows"; Description: "&Start ShortBot automatically when Windows starts (Recommended)"; Flags: checkedonce
+Name: "desktopicon"; Description: "Create a &desktop shortcut for ShortBot"; Flags: checkedonce
 
 [Files]
 #if MyAppFlavor == "Lite"
@@ -52,18 +52,24 @@ Source: "dist\ShortBot-Engine\*"; DestDir: "{app}"; Flags: ignoreversion recurse
 #endif
 
 [Icons]
-Name: "{autoprograms}\ShortBot Companion Engine"; Filename: "{app}\{#MyAppExeName}"
-Name: "{autoprograms}\Uninstall ShortBot Companion Engine"; Filename: "{uninstallexe}"
-Name: "{autodesktop}\ShortBot Companion Engine"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\ShortBot Engine"; Filename: "{app}\{#MyAppExeName}"; Tasks: startwithwindows
+Name: "{autoprograms}\ShortBot"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autoprograms}\Uninstall ShortBot"; Filename: "{uninstallexe}"
+Name: "{autodesktop}\ShortBot"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userstartup}\ShortBot Engine"; Filename: "{app}\{#MyAppExeName}"; Parameters: "--autostart"; Tasks: startwithwindows
 
 [Registry]
+; Windows Autostart on boot (Registry Run)
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "ShortBotEngine"; ValueData: """{app}\{#MyAppExeName}"" --autostart"; Flags: uninsdeletevalue; Tasks: startwithwindows
+
 ; Mozilla Firefox Native Messaging Host Registration
 Root: HKCU; Subkey: "Software\Mozilla\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.firefox.json"; Flags: uninsdeletekey
 
 ; Google Chrome & Microsoft Edge Native Messaging Host Registration
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.json"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\com.shortbot.backend"; ValueType: string; ValueData: "{app}\com.shortbot.backend.json"; Flags: uninsdeletekey
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--autostart"; Description: "&Launch ShortBot now"; Flags: nowait postinstall skipifsilent
 
 [Dirs]
 Name: "{app}\bin"; Permissions: users-full
@@ -98,9 +104,6 @@ begin
     // For Lite flavor, attempt silent winget setup in background if available
     Exec('cmd.exe', '/c winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements --silent', '', SW_HIDE, ewNoWait, ResultCode);
     #endif
-
-    // 4. Launch engine gracefully using ShellExec (does not throw fatal modal dialogs if blocked by system policy)
-    ShellExec('open', AppDir + '\{#MyAppExeName}', '', '', SW_HIDE, ewNoWait, ResultCode);
   end;
 end;
 

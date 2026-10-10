@@ -10,6 +10,8 @@ import urllib.request
 import urllib.parse
 import html
 import xml.etree.ElementTree as ET
+import shutil
+import yt_dlp
 
 # Ensure UTF-8 output handling on Windows to prevent charmap/emoji encoding crashes
 if sys.platform == "win32":
@@ -195,51 +197,34 @@ def search_youtube_shorts_shelf(search_query, max_results=20):
 
 
 def search_youtube_fast(search_query, max_results=20):
-    """Fast search using yt-dlp flat-playlist dump (~2s without spawning a browser).
+    """Fast in-process search using yt-dlp flat-playlist extraction (~0.5s without spawning any subprocess).
     Strictly filters by duration to ensure only genuine Shorts (<= 65s) are returned."""
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         cookies_file = os.path.join(base_dir, "cookies.txt")
-        cookies_args = ["--cookies", cookies_file] if os.path.isfile(cookies_file) else []
+        ydl_opts = {
+            "extract_flat": True,
+            "quiet": True,
+            "no_warnings": True,
+            "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
+        }
+        if os.path.isfile(cookies_file):
+            ydl_opts["cookiefile"] = cookies_file
 
-        # Request more items to compensate for filtering out longform videos
-        command = [
-            sys.executable, "-m", "yt_dlp",
-            *cookies_args,
-            "--extractor-args", "youtube:player_client=android,ios,web",
-            "--flat-playlist",
-            "--dump-json",
-            "--no-warnings",
-            f"ytsearch{max_results * 4}:{search_query} #shorts"
-        ]
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=25,
-            **get_no_window_kwargs()
-        )
-        if process.returncode != 0:
-            return []
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            data = ydl.extract_info(f"ytsearch{max_results * 4}:{search_query} #shorts", download=False)
+            entries = data.get("entries") or []
 
         results = []
         seen = set()
-        for line in process.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except Exception:
+        for item in entries:
+            if not item:
                 continue
             vid_id = item.get("id")
             title = item.get("title")
             duration = item.get("duration")
 
             # STRICT DURATION FILTER: YouTube Shorts are strictly <= 65 seconds
-            # Exclude full episodes, compilations, and long videos
             if duration is not None and (duration > 65 or duration < 3):
                 continue
 
@@ -260,44 +245,28 @@ def search_youtube_fast(search_query, max_results=20):
         return []
 
 
-
 def search_youtube_fallback_http(search_query, max_results=20):
-    """Fallback search using yt-dlp extended query with relaxed filters (~2s without spawning a browser)."""
+    """Fallback search using in-process yt-dlp query with relaxed duration filters."""
     try:
         base_dir = os.path.dirname(os.path.abspath(__file__))
         cookies_file = os.path.join(base_dir, "cookies.txt")
-        cookies_args = ["--cookies", cookies_file] if os.path.isfile(cookies_file) else []
+        ydl_opts = {
+            "extract_flat": True,
+            "quiet": True,
+            "no_warnings": True,
+            "extractor_args": {"youtube": {"player_client": ["android", "ios", "web"]}},
+        }
+        if os.path.isfile(cookies_file):
+            ydl_opts["cookiefile"] = cookies_file
 
-        command = [
-            sys.executable, "-m", "yt_dlp",
-            *cookies_args,
-            "--extractor-args", "youtube:player_client=android,ios,web",
-            "--flat-playlist",
-            "--dump-json",
-            "--no-warnings",
-            f"ytsearch{max_results * 2}:{search_query} shorts"
-        ]
-        process = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=25,
-            **get_no_window_kwargs()
-        )
-        if process.returncode != 0:
-            return []
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            data = ydl.extract_info(f"ytsearch{max_results * 2}:{search_query} shorts", download=False)
+            entries = data.get("entries") or []
 
         results = []
         seen = set()
-        for line in process.stdout.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except Exception:
+        for item in entries:
+            if not item:
                 continue
             vid_id = item.get("id")
             title = item.get("title")
@@ -322,28 +291,131 @@ def search_youtube_fallback_http(search_query, max_results=20):
         return []
 
 
+def search_multiplatform_headless(platform, search_query, max_results=20):
+    """Executes fast, 100% headless search via browser_search.js (zero popup window).
+    Extracts authentic titles, rich creator snippets, and direct URLs for Instagram, X, and Reddit."""
+    try:
+        candidates = [
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "browser_search.js"),
+            os.path.join(os.path.dirname(sys.executable), "browser_search.js"),
+            os.path.join(getattr(sys, "_MEIPASS", ""), "browser_search.js") if getattr(sys, "_MEIPASS", None) else "",
+        ]
+        script_path = next((p for p in candidates if p and os.path.isfile(p)), None)
+        if not script_path:
+            return []
+
+        node_bin = shutil.which("node") or "node"
+        command = [node_bin, script_path, str(platform), str(search_query), str(max_results)]
+
+        process = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=18,
+            **get_no_window_kwargs()
+        )
+        if process.returncode != 0:
+            return []
+
+        out = process.stdout.strip()
+        if not out:
+            return []
+
+        data = json.loads(out)
+        if data.get("ok"):
+            results = data.get("results", [])
+            if isinstance(results, list) and results:
+                return results[:max_results]
+        return []
+    except Exception as e:
+        safe_print(f"Headless {platform} search notice: {e}")
+        return []
+
+
 def search_reddit_videos(search_query, max_results=20):
-    """Fetch genuine Reddit video posts (v.redd.it) using Reddit's public Atom search feed."""
+    """Fetch genuine Reddit video posts (r/... and v.redd.it).
+    Primary: 100% silent headless Playwright search.
+    Fallback: direct HTTP DuckDuckGo scraper & feeds."""
+    # 1. Silent Headless Engine (Primary)
+    results = search_multiplatform_headless("reddit", search_query, max_results=max_results)
+    if results:
+        return results
+
+    # 2. HTTP Fallback via DuckDuckGo scraper (Same robust architecture as Instagram)
+    results = []
+    seen = set()
+    try:
+        q_str = f"site:reddit.com/r/ {search_query} video"
+        url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q_str)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5"
+            }
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            page_html = resp.read().decode("utf-8", errors="ignore")
+
+        blocks = re.findall(r'<div[^>]*class="[^"]*result[^"]*"[^>]*>(.*?)</div>\s*</div>', page_html, re.DOTALL)
+        for block in blocks:
+            url_m = re.search(r'uddg=([^&"\']+)', block)
+            if not url_m:
+                continue
+            target_url = urllib.parse.unquote(url_m.group(1))
+            if not (("reddit.com/r/" in target_url and "/comments/" in target_url) or "v.redd.it/" in target_url):
+                continue
+
+            clean_url = target_url.split("?")[0].rstrip("/") + "/"
+            if clean_url in seen:
+                continue
+            seen.add(clean_url)
+
+            link_title_m = re.search(r'<h2[^>]*>.*?<a[^>]*>(.*?)</a>', block, re.DOTALL)
+            title_text = ""
+            if link_title_m:
+                title_text = html.unescape(re.sub(r'<[^>]+>', '', link_title_m.group(1))).strip()
+
+            snippet_m = re.search(r'<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>(.*?)</a>', block, re.DOTALL)
+            snippet = html.unescape(re.sub(r'<[^>]+>', '', snippet_m.group(1))).strip() if snippet_m else ""
+
+            if not title_text or "reddit.com" in title_text.lower():
+                title_text = snippet[:70] if snippet else "Reddit Video"
+
+            results.append({
+                "title": title_text,
+                "snippet": snippet,
+                "url": clean_url,
+                "platform": "reddit"
+            })
+            if len(results) >= max_results:
+                break
+    except Exception as e:
+        safe_print(f"Reddit HTTP search notice: {e}")
+
+    if results:
+        return results
+
+    # 3. RSS Fallback as secondary backup
     encoded_q = urllib.parse.quote_plus(search_query)
     endpoints = [
         f"https://www.reddit.com/r/all/search.rss?q=url%3Av.redd.it+{encoded_q}&sort=relevance",
         f"https://www.reddit.com/r/videos/search.rss?q={encoded_q}&sort=relevance",
-        f"https://www.reddit.com/search.rss?q={encoded_q}+video&sort=relevance"
     ]
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
         "Accept": "application/atom+xml,application/xml,text/xml,*/*;q=0.9"
     }
-
-    results = []
-    seen = set()
 
     for url in endpoints:
         if len(results) >= max_results:
             break
         try:
             req = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(req, timeout=8) as resp:
+            with urllib.request.urlopen(req, timeout=6) as resp:
                 xml_data = resp.read()
             root = ET.fromstring(xml_data)
             for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
@@ -358,24 +430,30 @@ def search_reddit_videos(search_query, max_results=20):
                 seen.add(link)
                 results.append({
                     "title": title or "Reddit Video",
+                    "snippet": title,
                     "url": link,
                     "platform": "reddit"
                 })
                 if len(results) >= max_results:
                     break
-        except Exception as e:
-            safe_print(f"Reddit video search notice: {e}")
+        except Exception:
             continue
 
     return results
 
 
 def search_instagram_reels(search_query, max_results=20):
-    """Search for Instagram Reels using direct HTTP search feeds and public syndication (no browser)."""
+    """Search for Instagram Reels.
+    Primary: 100% silent headless Playwright search with rich snippet descriptions.
+    Fallback: direct HTTP DuckDuckGo scraper."""
+    # 1. Silent Headless Engine (Primary)
+    results = search_multiplatform_headless("instagram", search_query, max_results=max_results)
+    if results:
+        return results
+
+    # 2. HTTP Fallback
     results = []
     seen = set()
-
-    # 1. Direct HTTP search via DuckDuckGo HTML
     try:
         q_str = f"site:instagram.com/reel {search_query}"
         url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q_str)
@@ -426,66 +504,23 @@ def search_instagram_reels(search_query, max_results=20):
     except Exception as e:
         safe_print(f"Instagram HTTP search notice: {e}")
 
-    if len(results) >= max_results:
-        return results
-
-    # 2. Query Reddit for Instagram Reels public crossposts
-    try:
-        encoded_q = urllib.parse.quote_plus(search_query)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "application/atom+xml,application/xml,text/xml,*/*;q=0.9"
-        }
-        endpoints = [
-            f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com%2Freel+{encoded_q}&sort=relevance",
-            f"https://www.reddit.com/r/all/search.rss?q=url%3Ainstagram.com%2Fp+{encoded_q}&sort=relevance",
-            f"https://www.reddit.com/r/all/search.rss?q=instagram+{encoded_q}+video&sort=relevance"
-        ]
-        for ep in endpoints:
-            if len(results) >= max_results:
-                break
-            try:
-                req = urllib.request.Request(ep, headers=headers)
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    xml_data = resp.read()
-                root = ET.fromstring(xml_data)
-                for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
-                    content = entry.find("{http://www.w3.org/2005/Atom}content")
-                    c_text = content.text if content is not None else ""
-                    link_elem = entry.find("{http://www.w3.org/2005/Atom}link")
-                    l_href = link_elem.attrib.get("href", "") if link_elem is not None else ""
-
-                    combined = f"{c_text} {l_href}"
-                    matches = re.findall(r"https?://(?:www\.)?instagram\.com/(?:reel|reels|p)/([a-zA-Z0-9_-]+)/?", combined)
-                    title = entry.find("{http://www.w3.org/2005/Atom}title")
-                    t_text = html.unescape(title.text or "Instagram Reel").strip() if title is not None else "Instagram Reel"
-                    for code in matches:
-                        clean_m = f"https://www.instagram.com/reel/{code}/"
-                        if clean_m not in seen:
-                            seen.add(clean_m)
-                            results.append({
-                                "title": t_text,
-                                "url": clean_m,
-                                "platform": "instagram"
-                            })
-                            if len(results) >= max_results:
-                                break
-            except Exception:
-                continue
-    except Exception as e:
-        safe_print(f"Instagram RSS fallback notice: {e}")
-
     return results
 
 
 def search_x_videos(search_query, max_results=20):
-    """Search for X / Twitter video posts using direct HTTP search feeds and public syndication (no browser)."""
+    """Search for X / Twitter video posts.
+    Primary: 100% silent headless Playwright search with rich post snippets.
+    Fallback: direct HTTP DuckDuckGo scraper."""
+    # 1. Silent Headless Engine (Primary)
+    results = search_multiplatform_headless("x", search_query, max_results=max_results)
+    if results:
+        return results
+
+    # 2. HTTP Fallback
     results = []
     seen = set()
-
-    # 1. Direct HTTP search via DuckDuckGo HTML
     try:
-        q_str = f"site:x.com video {search_query}"
+        q_str = f"site:x.com {search_query} video"
         url = "https://html.duckduckgo.com/html/?q=" + urllib.parse.quote_plus(q_str)
         req = urllib.request.Request(
             url,
@@ -533,51 +568,6 @@ def search_x_videos(search_query, max_results=20):
                 break
     except Exception as e:
         safe_print(f"X HTTP search notice: {e}")
-
-    if len(results) >= max_results:
-        return results
-
-    # 2. Query Reddit for X/Twitter video public crossposts
-    try:
-        encoded_q = urllib.parse.quote_plus(search_query)
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            "Accept": "application/atom+xml,application/xml,text/xml,*/*;q=0.9"
-        }
-        endpoints = [
-            f"https://www.reddit.com/r/all/search.rss?q=url%3Atwitter.com+{encoded_q}+video&sort=relevance",
-            f"https://www.reddit.com/r/all/search.rss?q=url%3Ax.com+{encoded_q}+video&sort=relevance",
-            f"https://www.reddit.com/r/all/search.rss?q=twitter+{encoded_q}+video&sort=relevance"
-        ]
-        for ep in endpoints:
-            if len(results) >= max_results:
-                break
-            try:
-                req = urllib.request.Request(ep, headers=headers)
-                with urllib.request.urlopen(req, timeout=8) as resp:
-                    xml_data = resp.read()
-                root = ET.fromstring(xml_data)
-                for entry in root.findall("{http://www.w3.org/2005/Atom}entry"):
-                    content = entry.find("{http://www.w3.org/2005/Atom}content")
-                    c_text = content.text if content is not None else ""
-                    matches = re.findall(r"https?://(?:www\.)?(?:twitter|x)\.com/[^/\s]+/status/\d+", c_text)
-                    title = entry.find("{http://www.w3.org/2005/Atom}title")
-                    t_text = html.unescape(title.text or "X Video").strip() if title is not None else "X Video"
-                    for m in matches:
-                        clean_m = m.split("?")[0]
-                        if clean_m not in seen:
-                            seen.add(clean_m)
-                            results.append({
-                                "title": t_text,
-                                "url": clean_m,
-                                "platform": "x"
-                            })
-                            if len(results) >= max_results:
-                                break
-            except Exception:
-                continue
-    except Exception as e:
-        safe_print(f"X RSS fallback notice: {e}")
 
     return results
 
@@ -697,7 +687,7 @@ def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, r
     print("Understanding your request...")
     print()
 
-    plan = parse_request(user_request)
+    plan = parse_request(user_request, platform=platform)
 
     if not plan:
         plan = {
@@ -705,6 +695,7 @@ def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, r
             "topic": user_request.strip(),
             "subjects": [],
             "style": [],
+            "platform": platform,
             "fallback": True
         }
 
@@ -721,11 +712,17 @@ def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, r
         base_search_query = user_request.strip()
 
     if platform != "youtube":
-        cleaned = re.sub(r'(?i)\bshorts\b', '', base_search_query).strip()
+        cleaned = re.sub(r'(?i)\bshorts?\b', '', base_search_query).strip()
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
         base_search_query = cleaned or user_request.strip()
 
     print(f"Search query ({platform}):", base_search_query)
+    if plan.get("topic"):
+        print(f"Identified Topic: {plan.get('topic')}")
+    if plan.get("subjects"):
+        print(f"Target Subjects: {', '.join(plan.get('subjects'))}")
+    if plan.get("style"):
+        print(f"Target Style: {', '.join(plan.get('style'))}")
     print()
 
 
@@ -779,7 +776,8 @@ def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, r
         elif platform == "reddit":
             search_queries = [
                 base_search_query,
-                base_search_query + " video",
+                base_search_query + " clips",
+                base_search_query + " highlights",
                 base_search_query + " moments",
             ]
         elif platform == "instagram":
@@ -787,12 +785,14 @@ def find_shorts(user_request, quantity, platform="youtube", exclude_urls=None, r
                 base_search_query,
                 base_search_query + " viral",
                 base_search_query + " funny",
+                base_search_query + " reel",
             ]
         else:  # x / twitter
             search_queries = [
                 base_search_query,
-                base_search_query + " video",
-                base_search_query + " clip",
+                base_search_query + " clips",
+                base_search_query + " viral",
+                base_search_query + " moments",
             ]
 
 
