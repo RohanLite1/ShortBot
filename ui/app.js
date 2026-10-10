@@ -826,10 +826,22 @@ async function checkActiveMediaTab() {
         btn.setAttribute("data-platform", activePlatform);
 
         if (tagEl) {
-            tagEl.innerHTML = `<span class="platform-tag-badge">${platformInfo.iconSvg} <span>${platformInfo.tagText}</span></span>`;
+            tagEl.replaceChildren();
+            const tagBadge = document.createElement("span");
+            tagBadge.className = "platform-tag-badge";
+            try {
+                const svgDoc = new DOMParser().parseFromString(platformInfo.iconSvg, "image/svg+xml");
+                if (svgDoc && svgDoc.documentElement) {
+                    tagBadge.appendChild(document.importNode(svgDoc.documentElement, true));
+                }
+            } catch (e) {}
+            const tagSpan = document.createElement("span");
+            tagSpan.textContent = " " + platformInfo.tagText;
+            tagBadge.appendChild(tagSpan);
+            tagEl.appendChild(tagBadge);
         }
 
-        btn.innerHTML = platformInfo.buttonText;
+        btn.textContent = platformInfo.buttonText;
 
         function updateWatermarkCheckboxUI() {
             if (!watermarkCheckbox) return;
@@ -926,8 +938,19 @@ async function checkActiveMediaTab() {
 
                 if (!isAlive) {
                     btn.disabled = false;
-                    btn.innerHTML = platformInfo.buttonText;
-                    statusEl.innerHTML = 'ShortBot backend is offline. Run <code style="background:rgba(255,255,255,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;">python backend.py</code> in terminal, or click the status badge above to retry.';
+                    btn.textContent = platformInfo.buttonText;
+                    statusEl.replaceChildren();
+                    const codeEl = document.createElement("code");
+                    codeEl.style.background = "rgba(255,255,255,0.15)";
+                    codeEl.style.padding = "1px 4px";
+                    codeEl.style.borderRadius = "3px";
+                    codeEl.style.fontFamily = "monospace";
+                    codeEl.textContent = "python backend.py";
+                    statusEl.append(
+                        "ShortBot backend is offline. Run ",
+                        codeEl,
+                        " in terminal, or click the status badge above to retry."
+                    );
                     statusEl.className = "active-video-status error";
                     activeProgress.fail("ShortBot backend is offline");
                     return;
@@ -1001,7 +1024,7 @@ async function checkActiveMediaTab() {
                 console.error("Active download error:", err);
                 activeProgress.fail(err.message);
                 btn.disabled = false;
-                btn.innerHTML = platformInfo.buttonText;
+                btn.textContent = platformInfo.buttonText;
                 statusEl.textContent = "Download failed: " + err.message;
                 statusEl.className = "active-video-status error";
             }
@@ -1195,7 +1218,7 @@ function updateCompilationStatus(type, message, savedPath = null) {
         if (!box) return;
         if (!message) {
             box.style.display = "none";
-            box.innerHTML = "";
+            box.replaceChildren();
             box.className = "compilation-status-box";
             return;
         }
@@ -1203,7 +1226,7 @@ function updateCompilationStatus(type, message, savedPath = null) {
         box.style.display = "flex";
         box.className = `compilation-status-box ${type}`;
         
-        box.innerHTML = "";
+        box.replaceChildren();
         const span = document.createElement("span");
         span.textContent = message;
         box.appendChild(span);
@@ -1527,7 +1550,18 @@ function setupDirectDownloadSection() {
             if (!isAlive) {
                 directBtn.disabled = false;
                 directBtn.textContent = plat.isSupported ? plat.buttonText : "⬇ DOWNLOAD";
-                statusEl.innerHTML = 'ShortBot backend is offline. Run <code style="background:rgba(255,255,255,0.15);padding:1px 4px;border-radius:3px;font-family:monospace;">python backend.py</code> in terminal, or click the status badge above to retry.';
+                statusEl.replaceChildren();
+                const codeEl = document.createElement("code");
+                codeEl.style.background = "rgba(255,255,255,0.15)";
+                codeEl.style.padding = "1px 4px";
+                codeEl.style.borderRadius = "3px";
+                codeEl.style.fontFamily = "monospace";
+                codeEl.textContent = "python backend.py";
+                statusEl.append(
+                    "ShortBot backend is offline. Run ",
+                    codeEl,
+                    " in terminal, or click the status badge above to retry."
+                );
                 statusEl.className = "direct-video-status error";
                 directProgress.fail("ShortBot backend is offline");
                 return;
@@ -2646,6 +2680,51 @@ async function compileSelected() {
 // CREATE SELECTION CONTROLS
 // --------------------------------------------------
 
+function buildProgressCardDOM(container, stageId, percentId, timerId, fillId, detailId, defaultStage, defaultDetail) {
+    const header = document.createElement("div");
+    header.className = "progress-header";
+
+    const stage = document.createElement("span");
+    if (stageId) stage.id = stageId;
+    stage.className = "progress-stage";
+    stage.textContent = defaultStage || "Processing...";
+
+    const meta = document.createElement("span");
+    meta.className = "progress-meta";
+
+    const percent = document.createElement("span");
+    if (percentId) percent.id = percentId;
+    percent.className = "progress-percent";
+    percent.textContent = "0%";
+
+    const timer = document.createElement("span");
+    if (timerId) timer.id = timerId;
+    timer.className = "progress-timer";
+    timer.textContent = "⏱ 00:00";
+
+    meta.append(percent, timer);
+    header.append(stage, meta);
+
+    const track = document.createElement("div");
+    track.className = "progress-track";
+
+    const fill = document.createElement("div");
+    if (fillId) fill.id = fillId;
+    fill.className = "progress-fill";
+    fill.style.width = "0%";
+    track.appendChild(fill);
+
+    container.append(header, track);
+
+    if (detailId) {
+        const detail = document.createElement("div");
+        detail.id = detailId;
+        detail.className = "progress-detail";
+        detail.textContent = defaultDetail || "Starting...";
+        container.appendChild(detail);
+    }
+}
+
 function createSelectionControls() {
 
     const oldControls =
@@ -2733,17 +2812,36 @@ function createSelectionControls() {
 
     const saveAsRow = document.createElement("div");
     saveAsRow.className = "selection-toggle-row";
-    saveAsRow.innerHTML = `
-        <label class="selection-saveas-label" for="selectionSaveAsCheckbox" title="Ask where to save compiled video when finished">
-            <input type="checkbox" id="selectionSaveAsCheckbox" checked>
-            <span class="selection-checkbox-box">
-                <svg class="selection-check-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"></polyline>
-                </svg>
-            </span>
-            <span>Ask where to save compilation (Save As menu)</span>
-        </label>
-    `;
+    const saveAsLabel = document.createElement("label");
+    saveAsLabel.className = "selection-saveas-label";
+    saveAsLabel.htmlFor = "selectionSaveAsCheckbox";
+    saveAsLabel.title = "Ask where to save compiled video when finished";
+
+    const saveAsInput = document.createElement("input");
+    saveAsInput.type = "checkbox";
+    saveAsInput.id = "selectionSaveAsCheckbox";
+    saveAsInput.checked = true;
+
+    const saveAsBox = document.createElement("span");
+    saveAsBox.className = "selection-checkbox-box";
+    const checkSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    checkSvg.setAttribute("class", "selection-check-icon");
+    checkSvg.setAttribute("viewBox", "0 0 24 24");
+    checkSvg.setAttribute("fill", "none");
+    checkSvg.setAttribute("stroke", "currentColor");
+    checkSvg.setAttribute("stroke-width", "3.5");
+    checkSvg.setAttribute("stroke-linecap", "round");
+    checkSvg.setAttribute("stroke-linejoin", "round");
+    const checkPoly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    checkPoly.setAttribute("points", "20 6 9 17 4 12");
+    checkSvg.appendChild(checkPoly);
+    saveAsBox.appendChild(checkSvg);
+
+    const saveAsText = document.createElement("span");
+    saveAsText.textContent = "Ask where to save compilation (Save As menu)";
+
+    saveAsLabel.append(saveAsInput, saveAsBox, saveAsText);
+    saveAsRow.appendChild(saveAsLabel);
     controls.appendChild(saveAsRow);
 
     const clearButton =
@@ -2776,7 +2874,7 @@ function createSelectionControls() {
         reddit: "Reddit Clips"
     };
     const pLbl = platformLabels[currentPlatform] || "Videos";
-    refreshSelectionBtn.innerHTML = `🔄 REFRESH ${pLbl.toUpperCase()} (GET 5 DIFFERENT CLIPS)`;
+    refreshSelectionBtn.textContent = `🔄 REFRESH ${pLbl.toUpperCase()} (GET 5 DIFFERENT CLIPS)`;
     refreshSelectionBtn.title = "Fetch 5 different video clips for this topic";
     refreshSelectionBtn.addEventListener("click", () => {
         performCompilationSearch(currentPlatform || "youtube", true);
@@ -2787,19 +2885,16 @@ function createSelectionControls() {
     selProgress.id = "selectionProgressContainer";
     selProgress.className = "progress-card selection-progress";
     selProgress.style.display = "none";
-    selProgress.innerHTML = `
-        <div class="progress-header">
-            <span id="selectionProgressStage" class="progress-stage">Processing...</span>
-            <span class="progress-meta">
-                <span id="selectionProgressPercent" class="progress-percent">0%</span>
-                <span id="selectionProgressTimer" class="progress-timer">⏱ 00:00</span>
-            </span>
-        </div>
-        <div class="progress-track">
-            <div id="selectionProgressFill" class="progress-fill" style="width: 0%;"></div>
-        </div>
-        <div id="selectionProgressDetail" class="progress-detail">Starting batch...</div>
-    `;
+    buildProgressCardDOM(
+        selProgress,
+        "selectionProgressStage",
+        "selectionProgressPercent",
+        "selectionProgressTimer",
+        "selectionProgressFill",
+        "selectionProgressDetail",
+        "Processing...",
+        "Starting batch..."
+    );
     controls.appendChild(selProgress);
 
     results.appendChild(
@@ -3071,19 +3166,16 @@ function renderShorts(
             inlineProgress.id = `short-progress-${short.index}`;
             inlineProgress.className = "progress-card short-inline-progress";
             inlineProgress.style.display = "none";
-            inlineProgress.innerHTML = `
-                <div class="progress-header">
-                    <span id="short-progress-stage-${short.index}" class="progress-stage">Downloading...</span>
-                    <span class="progress-meta">
-                        <span id="short-progress-percent-${short.index}" class="progress-percent">0%</span>
-                        <span id="short-progress-timer-${short.index}" class="progress-timer">⏱ 00:00</span>
-                    </span>
-                </div>
-                <div class="progress-track">
-                    <div id="short-progress-fill-${short.index}" class="progress-fill" style="width: 0%;"></div>
-                </div>
-                <div id="short-progress-detail-${short.index}" class="progress-detail">Connecting to media source...</div>
-            `;
+            buildProgressCardDOM(
+                inlineProgress,
+                `short-progress-stage-${short.index}`,
+                `short-progress-percent-${short.index}`,
+                `short-progress-timer-${short.index}`,
+                `short-progress-fill-${short.index}`,
+                `short-progress-detail-${short.index}`,
+                "Downloading...",
+                "Connecting to media source..."
+            );
             card.appendChild(inlineProgress);
 
             results.appendChild(
@@ -3212,7 +3304,7 @@ async function performCompilationSearch(targetPlatform = "youtube", isRefresh = 
         reddit: btnCompileReddit
     }[targetPlatform] || searchButton;
 
-    const originalText = activeBtn ? activeBtn.innerHTML : "";
+    const originalText = activeBtn ? activeBtn.textContent : "";
     if (activeBtn && !isRefresh) {
         activeBtn.textContent = "SEARCHING...";
     }
@@ -3277,7 +3369,7 @@ async function performCompilationSearch(targetPlatform = "youtube", isRefresh = 
             b.disabled = false;
         });
         if (activeBtn && originalText && !isRefresh) {
-            activeBtn.innerHTML = originalText;
+            activeBtn.textContent = originalText;
         }
         if (btnRefreshResults) {
             btnRefreshResults.classList.remove("is-refreshing");
